@@ -82,5 +82,40 @@ data/generated/
   applied on the same period's client invoice.
 - **Ground truth**: a JSON next to every PDF (vendor, number, dates, period, lines with
   `campaign_ref`, subtotal, VAT 21% `ROUND_HALF_UP`, total). Money is a string for exact `Decimal`.
-- English only for now; no planted errors (task 1.3). Same seed → identical files (decision 024).
+- English only for now. Same seed → identical files (decision 024).
+- `python -m generator.documents` writes the clean documents only; `make generate` adds the errors below.
 - Fonts: DejaVu Sans (`generator/fonts/`, see `LICENSE-DejaVu.txt`) for Lithuanian letters.
+
+## Planted errors (`errors.py`)
+
+A separate pass over the clean world and documents (docs/plan.md §5.2, decision 025). Run:
+
+```
+make generate            # = uv run python -m generator
+```
+
+It writes the documents (with errors) plus:
+
+```
+data/generated/
+  delivery/<platform>/<account_id>.json   # what the platform API reports (mock APIs serve it)
+  answer_key.json                         # one record per planted error — evals only
+```
+
+| # | Error | What changes | Magnitude (EUR, net) |
+|---|---|---|---|
+| 1 | invoice above delivery | platform invoice line +3–15% | invoiced − delivered |
+| 2 | duplicate invoice | extra platform invoice, new number | its subtotal |
+| 3 | campaign renamed | API name without `[ref]` from a mid-month day | spend after rename |
+| 4 | timezone shift | last-day row dated the 1st of next month | last-day spend |
+| 5 | wrong markup | commission % ± 2–5 pp on client invoice | fee difference (signed) |
+| 6 | credit not applied | credit line removed from client invoice | subtotal difference |
+| 7 | pacing drift | month's spend delivered in the first 60% of days | peak overpacing |
+| 8 | CPC spike | clicks ÷ 1.8 for 3 days, same spend | spend × (1 − 1/1.8) |
+| 9 | missing days | 1–3 consecutive days absent from the API | omitted spend |
+
+Count per type = `max(errors.min_per_type, round(error_rate × candidates))`, capped at the
+candidates still available. Each client × platform × month carries at most one error. Settings
+live in the `errors:` block of `config.yaml`. Error #10 (prompt injection) comes in stage 2.
+Application code must never read `answer_key.json`; it reaches `eval.answer_key` only through
+the eval loader (task 1.11).

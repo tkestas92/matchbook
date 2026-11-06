@@ -8,8 +8,29 @@ months:
   start: "2026-05"
   end: "2026-10"
 
-# Share of documents/records that get a planted error (used from task 1.3).
+# Share of candidates per error type that get a planted error (generator/errors.py).
 error_rate: 0.05
+
+# Planted errors #1-#9 (docs/plan.md §5.2, decision 025).
+# Count per type = max(min_per_type, round(error_rate × candidates)), capped at the candidates
+# still available (each client × platform × month carries at most one error).
+errors:
+  min_per_type: 3
+  invoice_above_delivery:   # 1: one platform invoice line raised by pct
+    pct: {min: "0.03", max: "0.15"}
+  duplicate_invoice:        # 2: same invoice re-issued with a new number, days later
+    delay_days: {min: 3, max: 20}
+  campaign_renamed:         # 3: API reports a new name (no campaign_ref) from this day of month
+    from_day: {min: 10, max: 20}
+  wrong_markup:             # 5: client invoice commission off by ± percentage points
+    delta_pp: {min: "2.00", max: "5.00"}
+  pacing_drift:             # 7: monthly spend delivered in this share of the month
+    month_share: "0.60"
+  cpc_spike:                # 8: clicks ÷ multiplier at the same spend for consecutive days
+    multiplier: "1.8"
+    days: 3
+  missing_days:             # 9: consecutive mid-month days absent from the API
+    days: {min: 1, max: 3}
 
 platforms:
   meta:
