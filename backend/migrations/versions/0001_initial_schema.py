@@ -62,9 +62,7 @@ def upgrade() -> None:
     )
     op.create_table(
         "pipeline_runs",
-        sa.Column(
-            "id", sa.Uuid(), server_default=sa.text("gen_random_uuid()"), nullable=False
-        ),
+        sa.Column("id", sa.Uuid(), server_default=sa.text("gen_random_uuid()"), nullable=False),
         sa.Column(
             "started_at",
             sa.DateTime(timezone=True),
@@ -105,9 +103,7 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.CheckConstraint(
-            "role IN ('admin', 'planner', 'finance')", name=op.f("ck_users_role")
-        ),
+        sa.CheckConstraint("role IN ('admin', 'planner', 'finance')", name=op.f("ck_users_role")),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_users")),
         sa.UniqueConstraint("email", name=op.f("uq_users_email")),
         schema="app",
@@ -153,9 +149,7 @@ def upgrade() -> None:
         sa.Column("id", sa.BigInteger(), sa.Identity(always=True), nullable=False),
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column("timezone", sa.Text(), nullable=False),
-        sa.Column(
-            "metric_map", postgresql.JSONB(astext_type=sa.Text()), nullable=False
-        ),
+        sa.Column("metric_map", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -205,9 +199,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_google_responses")),
-        sa.UniqueConstraint(
-            "run_id", "page", name=op.f("uq_google_responses_run_id_page")
-        ),
+        sa.UniqueConstraint("run_id", "page", name=op.f("uq_google_responses_run_id_page")),
         schema="raw",
     )
     op.create_table(
@@ -224,9 +216,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_meta_responses")),
-        sa.UniqueConstraint(
-            "run_id", "page", name=op.f("uq_meta_responses_run_id_page")
-        ),
+        sa.UniqueConstraint("run_id", "page", name=op.f("uq_meta_responses_run_id_page")),
         schema="raw",
     )
     op.create_table(
@@ -243,9 +233,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_tiktok_responses")),
-        sa.UniqueConstraint(
-            "run_id", "page", name=op.f("uq_tiktok_responses_run_id_page")
-        ),
+        sa.UniqueConstraint("run_id", "page", name=op.f("uq_tiktok_responses_run_id_page")),
         schema="raw",
     )
     op.create_table(
@@ -301,9 +289,7 @@ def upgrade() -> None:
         sa.UniqueConstraint("dedup_key", name=op.f("uq_issues_dedup_key")),
         schema="app",
     )
-    op.create_index(
-        op.f("ix_issues_status"), "issues", ["status"], unique=False, schema="app"
-    )
+    op.create_index(op.f("ix_issues_status"), "issues", ["status"], unique=False, schema="app")
     op.create_table(
         "user_client_scope",
         sa.Column("user_id", sa.BigInteger(), nullable=False),
@@ -326,9 +312,7 @@ def upgrade() -> None:
             name=op.f("fk_user_client_scope_user_id_users"),
             ondelete="CASCADE",
         ),
-        sa.PrimaryKeyConstraint(
-            "user_id", "client_id", name=op.f("pk_user_client_scope")
-        ),
+        sa.PrimaryKeyConstraint("user_id", "client_id", name=op.f("pk_user_client_scope")),
         schema="app",
     )
     op.create_table(
@@ -412,9 +396,7 @@ def upgrade() -> None:
             "platform_id",
             "campaign_ref",
             "start_date",
-            name=op.f(
-                "uq_insertion_orders_client_id_platform_id_campaign_ref_start_date"
-            ),
+            name=op.f("uq_insertion_orders_client_id_platform_id_campaign_ref_start_date"),
         ),
         schema="core",
     )
@@ -451,9 +433,7 @@ def upgrade() -> None:
             "(kind = 'platform' AND platform_id IS NOT NULL) OR (kind = 'client' AND client_id IS NOT NULL)",
             name=op.f("ck_invoices_kind_requires_party"),
         ),
-        sa.CheckConstraint(
-            "kind IN ('platform', 'client')", name=op.f("ck_invoices_kind")
-        ),
+        sa.CheckConstraint("kind IN ('platform', 'client')", name=op.f("ck_invoices_kind")),
         sa.CheckConstraint(
             "status IN ('received', 'extracted', 'needs_review', 'approved')",
             name=op.f("ck_invoices_status"),
@@ -491,9 +471,7 @@ def upgrade() -> None:
         sa.Column("delivered", sa.Numeric(precision=12, scale=2), nullable=True),
         sa.Column("invoiced", sa.Numeric(precision=12, scale=2), nullable=True),
         sa.Column("client_invoiced", sa.Numeric(precision=12, scale=2), nullable=True),
-        sa.Column(
-            "expected_client_amount", sa.Numeric(precision=12, scale=2), nullable=True
-        ),
+        sa.Column("expected_client_amount", sa.Numeric(precision=12, scale=2), nullable=True),
         sa.Column("variance", sa.Numeric(precision=12, scale=2), nullable=True),
         sa.Column("status", sa.Text(), nullable=False),
         sa.Column("run_id", sa.Uuid(), nullable=False),
@@ -606,9 +584,7 @@ def upgrade() -> None:
             ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_credit_notes")),
-        sa.UniqueConstraint(
-            "vendor", "number", name=op.f("uq_credit_notes_vendor_number")
-        ),
+        sa.UniqueConstraint("vendor", "number", name=op.f("uq_credit_notes_vendor_number")),
         schema="core",
     )
     op.create_table(
@@ -638,9 +614,7 @@ def upgrade() -> None:
             ["core.campaigns.id"],
             name=op.f("fk_campaign_aliases_campaign_id_campaigns"),
         ),
-        sa.PrimaryKeyConstraint(
-            "campaign_id", "alias", name=op.f("pk_campaign_aliases")
-        ),
+        sa.PrimaryKeyConstraint("campaign_id", "alias", name=op.f("pk_campaign_aliases")),
         schema="core",
     )
     op.create_table(
@@ -672,9 +646,7 @@ def upgrade() -> None:
             ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_daily_delivery")),
-        sa.UniqueConstraint(
-            "campaign_id", "date", name=op.f("uq_daily_delivery_campaign_id_date")
-        ),
+        sa.UniqueConstraint("campaign_id", "date", name=op.f("uq_daily_delivery_campaign_id_date")),
         schema="core",
     )
     op.create_index(
@@ -693,9 +665,7 @@ def upgrade() -> None:
         sa.Column("campaign_id", sa.BigInteger(), nullable=True),
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("amount", sa.Numeric(precision=12, scale=2), nullable=False),
-        sa.Column(
-            "extracted_confidence", sa.Numeric(precision=4, scale=3), nullable=True
-        ),
+        sa.Column("extracted_confidence", sa.Numeric(precision=4, scale=3), nullable=True),
         sa.Column("run_id", sa.Uuid(), nullable=False),
         sa.Column(
             "created_at",
@@ -779,9 +749,7 @@ def downgrade() -> None:
     """Downgrade schema."""
     # ### commands auto generated by Alembic - please adjust! ###
     op.drop_table("invoice_lines", schema="core")
-    op.drop_index(
-        op.f("ix_daily_delivery_date"), table_name="daily_delivery", schema="core"
-    )
+    op.drop_index(op.f("ix_daily_delivery_date"), table_name="daily_delivery", schema="core")
     op.drop_table("daily_delivery", schema="core")
     op.drop_table("campaign_aliases", schema="core")
     op.drop_table("credit_notes", schema="core")

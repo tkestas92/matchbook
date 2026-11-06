@@ -115,9 +115,7 @@ class CampaignAlias(RunIdMixin, CreatedAtMixin, UpdatedAtMixin, Base):
     __tablename__ = "campaign_aliases"
     __table_args__ = (one_of("source", ALIAS_SOURCES), {"schema": "core"})
 
-    campaign_id: Mapped[int] = mapped_column(
-        ForeignKey("core.campaigns.id"), primary_key=True
-    )
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("core.campaigns.id"), primary_key=True)
     alias: Mapped[str] = mapped_column(primary_key=True)
     source: Mapped[str]
     confidence: Mapped[Decimal | None] = mapped_column(Confidence)
@@ -137,9 +135,7 @@ class DailyDelivery(RunIdMixin, CreatedAtMixin, UpdatedAtMixin, Base):
     )
 
     id: Mapped[IntPk]
-    campaign_id: Mapped[int] = mapped_column(
-        ForeignKey("core.campaigns.id", ondelete="RESTRICT")
-    )
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("core.campaigns.id", ondelete="RESTRICT"))
     date: Mapped[date]
     spend: Mapped[Decimal]
     impressions: Mapped[int] = mapped_column(BigInteger)
@@ -189,9 +185,7 @@ class InvoiceLine(RunIdMixin, CreatedAtMixin, UpdatedAtMixin, Base):
     __table_args__ = (UniqueConstraint("invoice_id", "line_no"), {"schema": "core"})
 
     id: Mapped[IntPk]
-    invoice_id: Mapped[int] = mapped_column(
-        ForeignKey("core.invoices.id", ondelete="RESTRICT")
-    )
+    invoice_id: Mapped[int] = mapped_column(ForeignKey("core.invoices.id", ondelete="RESTRICT"))
     line_no: Mapped[int]
     campaign_ref: Mapped[str | None]
     campaign_id: Mapped[int | None] = mapped_column(
