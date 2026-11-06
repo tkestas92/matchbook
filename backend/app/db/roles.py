@@ -11,9 +11,7 @@ from sqlalchemy import Connection, create_engine, text
 
 LOGIN_ROLES = ("etl", "app", "agent_ro", "eval_runner")
 
-ROLE_ATTRIBUTES = (
-    "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT"
-)
+ROLE_ATTRIBUTES = "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT"
 
 
 class MissingRolePasswordError(RuntimeError):
@@ -32,9 +30,7 @@ def role_passwords(settings: Settings) -> dict[str, str]:
 
 def ensure_role(conn: Connection, role: str, password: str) -> None:
     """Idempotent: create the role if missing, then (re)set attributes and password."""
-    exists = conn.execute(
-        text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": role}
-    ).scalar()
+    exists = conn.execute(text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": role}).scalar()
     if not exists:
         conn.execute(text(f'CREATE ROLE "{role}"'))
     # Quote server-side with %I / %L so the password is never concatenated into SQL.

@@ -24,8 +24,8 @@ lint: ## ruff check + format check
 	uv run ruff format --check .
 
 format: ## Auto-format and fix lint issues
-	uv run ruff format .
 	uv run ruff check --fix .
+	uv run ruff format .
 
 generate: ## Generate synthetic data (stage 1)
 	@echo "not yet implemented (stage 1)"

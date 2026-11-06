@@ -24,6 +24,16 @@ dev = [
 [tool.uv]
 package = false
 
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# Formatter owns wrapping; keep E501 off so we need not touch migrations/roles SQL.
+ignore = ["E501"]
+
 [tool.pytest.ini_options]
 pythonpath = ["backend", "."]
 testpaths = ["backend/tests"]
+addopts = ["-ra", "--strict-markers"]

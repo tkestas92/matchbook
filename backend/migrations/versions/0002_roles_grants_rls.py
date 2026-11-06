@@ -96,8 +96,7 @@ def upgrade() -> None:
     on_current_database("REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC")
     on_current_database("GRANT TEMPORARY ON DATABASE %I TO etl, app")
     on_current_database(
-        "ALTER ROLE agent_ro IN DATABASE %I "
-        f"SET statement_timeout = '{AGENT_STATEMENT_TIMEOUT}'"
+        f"ALTER ROLE agent_ro IN DATABASE %I SET statement_timeout = '{AGENT_STATEMENT_TIMEOUT}'"
     )
 
 
@@ -115,9 +114,7 @@ def create_role_if_missing(role: str) -> None:
 
 def on_current_database(template: str) -> None:
     """Run a statement whose `%I` is the current database name."""
-    op.execute(
-        f"DO $$ BEGIN EXECUTE format($q${template}$q$, current_database()); END $$"
-    )
+    op.execute(f"DO $$ BEGIN EXECUTE format($q${template}$q$, current_database()); END $$")
 
 
 def grant_on_schemas(
@@ -127,13 +124,10 @@ def grant_on_schemas(
         op.execute(f"GRANT USAGE ON SCHEMA {schema} TO {role}")
         op.execute(f"GRANT {privileges} ON ALL TABLES IN SCHEMA {schema} TO {role}")
         op.execute(
-            f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} "
-            f"GRANT {privileges} ON TABLES TO {role}"
+            f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} GRANT {privileges} ON TABLES TO {role}"
         )
         if sequences:
-            op.execute(
-                f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA {schema} TO {role}"
-            )
+            op.execute(f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA {schema} TO {role}")
             op.execute(
                 f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} "
                 f"GRANT USAGE, SELECT ON SEQUENCES TO {role}"
@@ -184,8 +178,7 @@ def enable_row_level_security() -> None:
     for table, predicate in RLS_POLICIES.items():
         op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
         op.execute(
-            f"CREATE POLICY agent_scope ON {table} FOR SELECT TO agent_views "
-            f"USING ({predicate})"
+            f"CREATE POLICY agent_scope ON {table} FOR SELECT TO agent_views USING ({predicate})"
         )
         op.execute(
             f"CREATE POLICY full_access ON {table} TO etl, app, eval_runner "
@@ -214,10 +207,8 @@ def downgrade() -> None:
             op.execute(f"REVOKE ALL ON ALL SEQUENCES IN SCHEMA {schema} FROM {role}")
             op.execute(f"REVOKE ALL ON SCHEMA {schema} FROM {role}")
             op.execute(
-                f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} "
-                f"REVOKE ALL ON TABLES FROM {role}"
+                f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} REVOKE ALL ON TABLES FROM {role}"
             )
             op.execute(
-                f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} "
-                f"REVOKE ALL ON SEQUENCES FROM {role}"
+                f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} REVOKE ALL ON SEQUENCES FROM {role}"
             )

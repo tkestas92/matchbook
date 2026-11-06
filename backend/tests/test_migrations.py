@@ -11,8 +11,6 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
-from app.config import get_settings
-from pydantic import ValidationError
 from sqlalchemy import Connection, Engine, create_engine, inspect, text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
@@ -25,16 +23,9 @@ from tests.schema_expectations import (
 ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
 
 
-def server_url() -> URL:
-    try:
-        return make_url(get_settings().database_url)
-    except ValidationError:
-        pytest.skip("DATABASE_URL is not set")
-
-
 @contextmanager
-def temporary_database() -> Iterator[URL]:
-    url = server_url()
+def temporary_database(database_url: str) -> Iterator[URL]:
+    url = make_url(database_url)
     admin = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
     name = f"matchbook_test_{uuid.uuid4().hex[:12]}"
     try:
@@ -69,8 +60,8 @@ def existing_tables(engine: Engine) -> set[str]:
 
 
 @pytest.fixture(scope="module")
-def engine() -> Iterator[Engine]:
-    with temporary_database() as url:
+def engine(database_url: str) -> Iterator[Engine]:
+    with temporary_database(database_url) as url:
         command.upgrade(alembic_config(url), "head")
         engine = create_engine(url)
         yield engine
@@ -133,9 +124,7 @@ def seed_campaign(conn: Connection) -> dict[str, object]:
     }
 
 
-def insert_platform_invoice(
-    conn: Connection, seed: dict[str, object], number: str
-) -> int:
+def insert_platform_invoice(conn: Connection, seed: dict[str, object], number: str) -> int:
     return insert(
         conn,
         "INSERT INTO core.invoices "
@@ -294,8 +283,8 @@ def test_updated_at_advances_on_update(engine: Engine) -> None:
     assert updated_at > created_at
 
 
-def test_downgrade_then_upgrade_round_trips() -> None:
-    with temporary_database() as url:
+def test_downgrade_then_upgrade_round_trips(database_url: str) -> None:
+    with temporary_database(database_url) as url:
         config = alembic_config(url)
         engine = create_engine(url)
         try:

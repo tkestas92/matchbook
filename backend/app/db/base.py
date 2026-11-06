@@ -26,9 +26,7 @@ NAMING_CONVENTION = {
 
 MONEY = Numeric(12, 2)
 
-IntPk = Annotated[
-    int, mapped_column(BigInteger, Identity(always=True), primary_key=True)
-]
+IntPk = Annotated[int, mapped_column(BigInteger, Identity(always=True), primary_key=True)]
 Json = dict[str, Any]
 
 

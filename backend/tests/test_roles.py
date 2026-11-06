@@ -109,9 +109,7 @@ def seed_user(conn: Connection, client_ids: tuple[int, ...]) -> int:
     )
     for client_id in client_ids:
         conn.execute(
-            text(
-                "INSERT INTO app.user_client_scope (user_id, client_id) VALUES (:u, :c)"
-            ),
+            text("INSERT INTO app.user_client_scope (user_id, client_id) VALUES (:u, :c)"),
             {"u": user_id, "c": client_id},
         )
     return user_id
@@ -143,12 +141,12 @@ def seed(conn: Connection) -> Seed:
 
 
 @pytest.fixture(scope="module")
-def db() -> Iterator[Db]:
+def db(database_url: str) -> Iterator[Db]:
     try:
         passwords = role_passwords(get_settings())
     except MissingRolePasswordError as exc:
         pytest.fail(str(exc))
-    with temporary_database() as url:
+    with temporary_database(database_url) as url:
         admin = create_engine(url)
         try:
             with admin.begin() as conn:
@@ -168,9 +166,7 @@ def login(db: Db) -> Iterator[Callable[[str], Engine]]:
 
     def engine_for(role: str) -> Engine:
         if role not in engines:
-            engines[role] = create_engine(
-                db.url.set(username=role, password=db.passwords[role])
-            )
+            engines[role] = create_engine(db.url.set(username=role, password=db.passwords[role]))
         return engines[role]
 
     yield engine_for
@@ -278,9 +274,7 @@ def test_agent_ro_cannot_write_join_view(as_role: Callable[[str], Connection]) -
 
 
 @pytest.mark.parametrize("table", sorted(EXPECTED_TABLES))
-def test_agent_ro_cannot_read_base_tables(
-    as_role: Callable[[str], Connection], table: str
-) -> None:
+def test_agent_ro_cannot_read_base_tables(as_role: Callable[[str], Connection], table: str) -> None:
     assert_denied(as_role("agent_ro"), f"SELECT * FROM {table} LIMIT 1")
 
 
@@ -334,9 +328,7 @@ def test_agent_ro_without_scope_sees_nothing(
 # --- agent_ro: cannot widen its own scope ----------------------------------------
 
 
-def test_agent_ro_cannot_call_set_config(
-    db: Db, as_role: Callable[[str], Connection]
-) -> None:
+def test_agent_ro_cannot_call_set_config(db: Db, as_role: Callable[[str], Connection]) -> None:
     conn = as_role("agent_ro")
     set_user(conn, db.seed.user_a)
     with pytest.raises(DBAPIError, match="permission denied for function set_config"):
@@ -380,9 +372,7 @@ def test_role_cannot_read_eval(as_role: Callable[[str], Connection], role: str) 
     assert_denied(as_role(role), "SELECT * FROM eval.answer_key")
 
 
-def test_app_reads_core_and_writes_app(
-    db: Db, as_role: Callable[[str], Connection]
-) -> None:
+def test_app_reads_core_and_writes_app(db: Db, as_role: Callable[[str], Connection]) -> None:
     conn = as_role("app")
     assert conn.execute(text("SELECT count(*) FROM core.clients")).scalar_one() >= 2
     conn.execute(
