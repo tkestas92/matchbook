@@ -88,3 +88,8 @@ New entries go at the bottom. Format: context → decision → consequences.
 - `EXECUTE` on `set_config(text, text, boolean)` is revoked from `PUBLIC` and granted only to `etl`, `app`, `eval_runner`, so a `SELECT set_config('app.user_id', …)` from the agent fails. The trusted caller sets scope with `SET LOCAL app.user_id = …` in the transaction before the agent's query.
 - `agent_ro` has `statement_timeout = 5s` in this database; `TEMPORARY` is revoked from `PUBLIC`.
 **Consequences:** access rules live in the database and are proven by `test_roles.py`. `SET`/`RESET` are commands, not functions, so the revoke alone cannot stop them: the stage-3 SQL executor **must** accept only a single `SELECT` statement and reject everything else before it reaches the DB. Revoking a `pg_catalog` function needs a superuser; on a managed Postgres (stage 5) this must be re-checked. New tables read by agent views need a policy.
+
+## 017 — Kaggle distributions: stdlib lognormal fits
+**Context:** the generator needs realistic CTR, CPC, CPM and CVR; the Kaggle dataset has no dates, so only ratios can be used.
+**Decision:** `generator/build_distributions.py` drops unusable rows (zero clicks, zero or negative spend, impressions below clicks), computes per-row ratios and stores moments, percentiles and a lognormal fit (MLE on ln x, stdlib only, no new dependency) in the committed `generator/distributions.json`. Exact zeros (CVR) are recorded as `zero_share` and excluded from the fit. The CSV is never committed and tests read only the JSON.
+**Consequences:** CI needs no dataset; lognormal fits CPC loosely (see `ks_distance`), which is acceptable for synthetic data.
