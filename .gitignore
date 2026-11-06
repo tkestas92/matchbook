@@ -1,0 +1,13 @@
+.env
+data/
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.DS_Store
+node_modules/
+.next/
+generator/output/
+outputs/
