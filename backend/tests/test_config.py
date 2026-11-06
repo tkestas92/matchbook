@@ -5,6 +5,8 @@ from pydantic import ValidationError
 
 def test_settings_read_env_and_apply_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@localhost:5432/db")
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("AGENCY_TIMEZONE", raising=False)
     settings = Settings(_env_file=None)
     assert settings.database_url == "postgresql+psycopg://u:p@localhost:5432/db"
     assert settings.app_env == "local"
