@@ -3,6 +3,7 @@
 import hashlib
 import json
 import shutil
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from generator.documents.pdf import render_credit_note, render_invoice
 from generator.world import World
 
 MANIFEST_NAME = "manifest.json"
+DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "data" / "generated"
 
 
 def invoice_dir(invoice: Invoice) -> Path:
@@ -37,11 +39,23 @@ def plan_path(client_code: str) -> Path:
 
 
 def generate_documents(world: World, config: DocumentsConfig, out_dir: Path) -> Documents:
-    """Replace `out_dir` with freshly rendered documents and return what was written."""
+    """Replace `out_dir` with freshly rendered clean documents and return what was written."""
+    documents = build_documents(world, config)
+    write_outputs(world, documents, config, out_dir)
+    return documents
+
+
+def write_outputs(
+    world: World,
+    documents: Documents,
+    config: DocumentsConfig,
+    out_dir: Path,
+    extra_json: Mapping[Path, Any] | None = None,
+) -> None:
+    """Replace `out_dir` with `documents` plus extra JSON files (relative paths), and a manifest."""
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
-    documents = build_documents(world, config)
     for client in world.clients:
         write_media_plan(world, client, ensure_parent(out_dir / plan_path(client.code)))
     for invoice in (*documents.platform_invoices, *documents.client_invoices):
@@ -52,8 +66,9 @@ def generate_documents(world: World, config: DocumentsConfig, out_dir: Path) -> 
         base = ensure_parent(out_dir / credit_note_dir(note) / note.number)
         render_credit_note(note, base.with_suffix(".pdf"))
         write_json(base.with_suffix(".json"), credit_note_ground_truth(note))
+    for relative, payload in (extra_json or {}).items():
+        write_json(ensure_parent(out_dir / relative), payload)
     write_json(out_dir / MANIFEST_NAME, {"seed": world.seed, "files": file_hashes(out_dir)})
-    return documents
 
 
 def ensure_parent(path: Path) -> Path:

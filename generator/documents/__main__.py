@@ -3,14 +3,10 @@
 Run: uv run python -m generator.documents
 """
 
-from pathlib import Path
-
 from generator.documents.config import load_documents_config
+from generator.documents.writer import DEFAULT_OUTPUT_DIR as OUTPUT_DIR
 from generator.documents.writer import generate_documents
 from generator.world import build_world, load_config
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-OUTPUT_DIR = REPO_ROOT / "data" / "generated"
 
 
 def main() -> None:

@@ -27,8 +27,8 @@ format: ## Auto-format and fix lint issues
 	uv run ruff check --fix .
 	uv run ruff format .
 
-generate: ## Generate synthetic data (stage 1)
-	@echo "not yet implemented (stage 1)"
+generate: ## Generate synthetic data with planted errors into data/generated/
+	uv run python -m generator
 
 pipeline: ## Run the nightly pipeline without Airflow (stage 1)
 	@echo "not yet implemented (stage 1)"
