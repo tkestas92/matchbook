@@ -4,11 +4,11 @@
 help: ## List available targets
 	@grep -E '^[a-z_]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
 
-up: ## Start local services (task 0.2)
-	@echo "not yet implemented (task 0.2)"
+up: ## Start local services
+	docker compose up -d --wait
 
-down: ## Stop local services (task 0.2)
-	@echo "not yet implemented (task 0.2)"
+down: ## Stop local services
+	docker compose down
 
 migrate: ## Apply Alembic migrations (task 0.3)
 	@echo "not yet implemented (task 0.3)"
