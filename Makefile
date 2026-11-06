@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help up down migrate test lint format generate pipeline eval
+.PHONY: help up down roles migrate test lint format generate pipeline eval
 
 help: ## List available targets
 	@grep -E '^[a-z_]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -9,6 +9,9 @@ up: ## Start local services
 
 down: ## Stop local services
 	docker compose down
+
+roles: ## Create/update DB login roles from .env (idempotent)
+	PYTHONPATH=backend uv run python -m app.db.roles
 
 migrate: ## Apply Alembic migrations
 	uv run alembic upgrade head
