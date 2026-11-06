@@ -1,0 +1,88 @@
+{
+  "metrics": {
+    "cpc": {
+      "mean": 1.49935,
+      "n": 936,
+      "p25": 1.39,
+      "p5": 1.12583,
+      "p50": 1.49827,
+      "p75": 1.64436,
+      "p95": 1.84267,
+      "std": 0.232879,
+      "suggested": {
+        "ks_distance": 0.160048,
+        "mu": 0.389181,
+        "name": "lognormal",
+        "sigma": 0.196611
+      },
+      "zero_share": 0.0
+    },
+    "cpm": {
+      "mean": 0.292328,
+      "n": 936,
+      "p25": 0.21582,
+      "p5": 0.123043,
+      "p50": 0.274454,
+      "p75": 0.35386,
+      "p95": 0.506293,
+      "std": 0.127006,
+      "suggested": {
+        "ks_distance": 0.0616392,
+        "mu": -1.3183,
+        "name": "lognormal",
+        "sigma": 0.433903
+      },
+      "zero_share": 0.0
+    },
+    "ctr": {
+      "mean": 0.000200509,
+      "n": 936,
+      "p25": 0.000136846,
+      "p5": 8.2639e-05,
+      "p50": 0.00018243,
+      "p75": 0.000247492,
+      "p95": 0.000363951,
+      "std": 9.42336e-05,
+      "suggested": {
+        "ks_distance": 0.0303772,
+        "mu": -8.61524,
+        "name": "lognormal",
+        "sigma": 0.455811
+      },
+      "zero_share": 0.0
+    },
+    "cvr": {
+      "mean": 0.295152,
+      "n": 936,
+      "p25": 0.058701,
+      "p5": 0.0237395,
+      "p50": 0.128768,
+      "p75": 0.333333,
+      "p95": 1.0,
+      "std": 0.38724,
+      "suggested": {
+        "ks_distance": 0.0862789,
+        "mu": -1.91528,
+        "name": "lognormal",
+        "sigma": 1.2018
+      },
+      "zero_share": 0.00534188
+    }
+  },
+  "rows": {
+    "dropped": 207,
+    "dropped_by_reason": {
+      "conversions_without_clicks": 204,
+      "zero_clicks": 207,
+      "zero_or_negative_spend": 207
+    },
+    "read": 1143,
+    "used": 936
+  },
+  "source": {
+    "author": "loveall",
+    "dataset": "Clicks Conversion Tracking",
+    "note": "Dataset has no dates; only ratios are used.",
+    "platform": "Kaggle"
+  }
+}
