@@ -56,6 +56,23 @@ delivery:
     "2026-09": 1.05
     "2026-10": 1.15
 
+# The agency issuing invoices to clients (fictional).
+agency:
+  name: UAB Matchbook Media
+  vat_code: LT100000000000
+  invoice_prefix: MBM
+
+# Rendered documents (generator/documents/, task 1.2).
+documents:
+  vat_rate: "0.21"
+  payment_terms_days: 30
+  # Platform credit notes linked to original platform invoices; amount = original subtotal × pct.
+  credit_notes:
+    count: 4
+    pct:
+      min: "0.02"
+      max: "0.08"
+
 clients:
   - code: SAU
     name: UAB Saulės Vėjas
