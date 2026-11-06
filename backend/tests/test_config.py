@@ -28,3 +28,14 @@ def test_get_settings_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
     get_settings.cache_clear()
     assert get_settings() is get_settings()
     get_settings.cache_clear()
+
+
+def test_role_passwords_are_optional_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@localhost:5432/db")
+    monkeypatch.delenv("ETL_DB_PASSWORD", raising=False)
+    monkeypatch.setenv("AGENT_RO_DB_PASSWORD", "s3cret")
+    settings = Settings(_env_file=None)
+    assert settings.etl_db_password is None
+    assert settings.agent_ro_db_password is not None
+    assert settings.agent_ro_db_password.get_secret_value() == "s3cret"
+    assert "s3cret" not in repr(settings)

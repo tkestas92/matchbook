@@ -74,3 +74,17 @@ New entries go at the bottom. Format: context → decision → consequences.
 **Context:** money is `NUMERIC(12,2)` (decision 005), but a single LLM call costs fractions of a cent.
 **Decision:** `app.pipeline_runs.cost_eur` is `NUMERIC(12,6)` — the one exception. It is an internal cost metric, never billed.
 **Consequences:** per-run cost tracking and cost caps stay accurate; all billable amounts remain `NUMERIC(12,2)`.
+
+## 015 — Login roles via `make roles`, privileges via migrations
+**Context:** decision 004 needs roles `etl`, `app`, `agent_ro`, `eval_runner` with passwords from env. Roles are cluster-wide (shared by every database, incl. throwaway test databases); passwords are per-environment secrets that rotate.
+**Decision:** `make roles` (`backend/app/db/roles.py`) idempotently creates the login roles and sets `LOGIN`, `PASSWORD` and explicit no-privilege attributes from `.env`; the password is quoted server-side with `format('%L')`. Migration `0002` owns everything database-scoped and non-secret: grants, default privileges, views, RLS, `statement_timeout`. It creates missing roles as `NOLOGIN`, so `make roles` and `make migrate` work in either order. Downgrade revokes but never drops roles.
+**Consequences:** no secrets in migration files or `alembic --sql` output; rotating a password is `make roles`; a fresh environment runs `make up && make roles && make migrate`.
+
+## 016 — Agent access: owner-rights views + RLS keyed on `app.user_id`
+**Context:** `agent_ro` runs LLM-written SQL. It must read only curated views, never base tables, and only for clients its user may see. `security_invoker` views would require `agent_ro` to have SELECT on base tables; `FORCE ROW LEVEL SECURITY` does not help because the table owner is a superuser and superusers always bypass RLS.
+**Decision:**
+- A `NOLOGIN` role `agent_views` (not superuser, not table owner) has SELECT on the base tables the views need and **owns** `core.v_spend_daily`, `v_pacing_base`, `v_invoices`, `v_issues` (`security_barrier`). Postgres applies base-table RLS as the view owner, so policies `TO agent_views` fire for every view read. `agent_ro` has only `USAGE` on `core` + `SELECT` on the four views.
+- Policies filter by `core.agent_client_ids()`: a `SECURITY DEFINER` function returning the client ids in `app.user_client_scope` for `current_setting('app.user_id', true)`. Unset, empty, unknown or unscoped user → empty array → **zero rows** (fail closed). Other roles get `USING (true)` policies; rows without a client (platform invoices, client-less issues) are hidden from the agent.
+- `EXECUTE` on `set_config(text, text, boolean)` is revoked from `PUBLIC` and granted only to `etl`, `app`, `eval_runner`, so a `SELECT set_config('app.user_id', …)` from the agent fails. The trusted caller sets scope with `SET LOCAL app.user_id = …` in the transaction before the agent's query.
+- `agent_ro` has `statement_timeout = 5s` in this database; `TEMPORARY` is revoked from `PUBLIC`.
+**Consequences:** access rules live in the database and are proven by `test_roles.py`. `SET`/`RESET` are commands, not functions, so the revoke alone cannot stop them: the stage-3 SQL executor **must** accept only a single `SELECT` statement and reject everything else before it reaches the DB. Revoking a `pg_catalog` function needs a superuser; on a managed Postgres (stage 5) this must be re-checked. New tables read by agent views need a policy.
