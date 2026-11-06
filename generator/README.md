@@ -30,3 +30,27 @@ CPM) are scale hints only. CVR can exceed 1 in a few rows because conversions ar
 
 Dataset: "Clicks Conversion Tracking" by loveall, from Kaggle:
 https://www.kaggle.com/datasets/loveall/clicks-conversion-tracking
+
+## True world (`world.py`)
+
+Builds what was planned, delivered and spent, deterministically from `config.yaml`
+(seed, clients, months, platforms, ratio levels, delivery noise). Run:
+
+```
+uv run python generator/world.py
+```
+
+It prints counts, totals and a digest; the same seed always gives the same digest.
+
+- **Clients:** listed in `config.yaml` (fictional), each with a billing model (markup 10–20%,
+  management fee, client-owned) and 2–3 platforms with budget shares.
+- **Ad accounts:** one per client × platform, in the platform's timezone.
+- **Insertion orders:** one per client × month × platform; budget = monthly budget × month
+  multiplier × platform share; `campaign_ref` like `SAU-META-2605`.
+- **Campaigns:** one per IO, with base CPM/CTR/CVR sampled per campaign.
+- **Daily delivery:** plan = budget split by weekday weights (Σplan = budget exactly);
+  spend = plan × (1 ± noise, 5–10% per campaign); impressions, clicks and conversions from
+  CPM/CTR/CVR. Dates are ad-account local.
+
+Ratio spread comes from `distributions.json`; mean levels from `config.yaml` (decision 022).
+No documents and no planted errors yet; money is always `Decimal`.

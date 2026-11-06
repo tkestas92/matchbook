@@ -190,6 +190,7 @@ dependencies = [
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
+    { name = "pyyaml" },
     { name = "sqlalchemy" },
     { name = "uvicorn" },
 ]
@@ -208,6 +209,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"] },
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "sqlalchemy", specifier = ">=2" },
     { name = "uvicorn" },
 ]

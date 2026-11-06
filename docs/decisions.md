@@ -113,3 +113,13 @@ New entries go at the bottom. Format: context → decision → consequences.
 **Context:** CI sets `APP_ENV=test`; a settings-default test failed because it inherited that value.
 **Decision:** tests that assert Settings defaults clear those env vars with `monkeypatch.delenv(..., raising=False)` before constructing `Settings(_env_file=None)`.
 **Consequences:** default-value tests pass locally and in CI regardless of workflow or shell env.
+
+## 022 — Kaggle gives the shape, config.yaml gives the level
+**Context:** the Kaggle dataset's absolute levels are unrealistic for EUR ad buying (CTR ≈ 0.02%, CPM ≈ 0.3), but its spread is still a useful hint of how much campaigns differ.
+**Decision:** `generator/world.py` keeps the lognormal `sigma` from `distributions.json` and sets the mean per platform from `ratios` in `generator/config.yaml` (e.g. Meta CPM ≈ 6 EUR, CTR ≈ 1%) using `mu = ln(mean) − sigma²/2`. Base CPM/CTR/CVR are sampled once per campaign; days wobble around the base with `sigma × daily_ratio_sigma_factor`. CPC is derived (spend / clicks), never sampled, so ratios stay consistent. CVR is capped so conversions ≤ clicks; Kaggle `zero_share` sets the chance of a zero-conversion day.
+**Consequences:** realistic magnitudes with data-driven variation; levels are tuned in one YAML file without rebuilding `distributions.json`.
+
+## 023 — Deterministic generator: per-entity RNG streams, Decimal at generation
+**Context:** the same seed must always produce the same world (plan §5.1), and later steps (documents, errors) must not shift when the client list changes.
+**Decision:** every entity draws from its own `random.Random("<seed>:<kind>:<key>")` (string seeds are SHA-512-hashed, independent of `PYTHONHASHSEED`). Clients are listed explicitly in `config.yaml`. Money is quoted in YAML, parsed to `Decimal` and quantized to cents (`ROUND_HALF_UP`) when generated; the daily plan's rounding remainder goes to the last day so Σplan equals the IO budget exactly. One campaign per IO, `campaign_ref` = `{CLIENT}-{PLATFORM}-{YYMM}`. Delivery dates are the ad account's local dates. `world_digest()` (SHA-256 of canonical JSON) fingerprints a world. PyYAML becomes a runtime dependency to read `config.yaml`.
+**Consequences:** reproducible worlds testable by digest; adding a client does not change other clients' data; pipeline and reconciliation can compare money exactly.
