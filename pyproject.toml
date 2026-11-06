@@ -1,0 +1,29 @@
+[project]
+name = "matchbook"
+version = "0.1.0"
+description = "Three-way media reconciliation & reporting for agencies"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "sqlalchemy>=2",
+    "alembic",
+    "psycopg[binary]",
+    "pydantic-settings",
+    "python-dotenv",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "ruff",
+    "pre-commit",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["backend", "."]
+testpaths = ["backend/tests"]
