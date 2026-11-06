@@ -59,3 +59,18 @@ New entries go at the bottom. Format: context → decision → consequences.
 **Context:** the project is a portfolio piece for international and Lithuanian employers.
 **Decision:** public from day one; code, docs and commits in English.
 **Consequences:** commit history shows how the project grew.
+
+## 012 — Schema conventions: TEXT + CHECK enums, run_id without FK, updated_at by trigger
+**Context:** the schema will evolve every stage; the pipeline upserts with `INSERT … ON CONFLICT`; `core` and `app` are written by different DB roles.
+**Decision:** enum-like columns are `TEXT` with a named `CHECK` (not PG `ENUM`). `run_id` is a `UUID NOT NULL` on every pipeline-written row with **no** FK to `app.pipeline_runs`. `updated_at` is set by a `BEFORE UPDATE` trigger (`core.set_updated_at()`), not by the ORM. `app.audit_log` is insert-only via a trigger that rejects UPDATE, DELETE and TRUNCATE. FKs from financial tables use `ON DELETE RESTRICT`; `eval` has no FKs into `core`/`app`.
+**Consequences:** adding an enum value is a one-line migration; `core` does not depend on `app`; upserts keep `updated_at` correct; audit history and financial rows cannot vanish by accident.
+
+## 013 — Ad accounts carry the reporting timezone
+**Context:** Meta and Google report in the *account* timezone (plan §5.3), and a campaign without an IO had no link to a client.
+**Decision:** add `core.ad_accounts` (client, platform, external account id, timezone); every campaign belongs to an ad account. `core.platforms.timezone` stays as the platform default.
+**Consequences:** delivery can be converted from the right timezone per account; every campaign has a client even before it is matched to an IO.
+
+## 014 — Pipeline cost uses NUMERIC(12,6)
+**Context:** money is `NUMERIC(12,2)` (decision 005), but a single LLM call costs fractions of a cent.
+**Decision:** `app.pipeline_runs.cost_eur` is `NUMERIC(12,6)` — the one exception. It is an internal cost metric, never billed.
+**Consequences:** per-run cost tracking and cost caps stay accurate; all billable amounts remain `NUMERIC(12,2)`.

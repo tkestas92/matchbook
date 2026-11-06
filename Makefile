@@ -10,8 +10,8 @@ up: ## Start local services
 down: ## Stop local services
 	docker compose down
 
-migrate: ## Apply Alembic migrations (task 0.3)
-	@echo "not yet implemented (task 0.3)"
+migrate: ## Apply Alembic migrations
+	uv run alembic upgrade head
 
 test: ## Run pytest
 	uv run pytest

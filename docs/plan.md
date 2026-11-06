@@ -127,26 +127,33 @@ All: bearer token required; occasional `429` (must back off and retry) and `500`
 
 `eval` is isolated so that no module can "find" errors by reading the answers.
 
-### 6.2 Tables (draft)
+### 6.2 Tables
+Defined in `backend/app/db/models/`, created by `backend/migrations/`.
+
 | Table | Key fields |
 |---|---|
-| `core.clients` | id, name, industry, billing_model, markup_pct, mgmt_fee, currency |
-| `core.platforms` | id, name, timezone, metric_map |
-| `core.insertion_orders` | id, client_id, platform_id, campaign_ref, start_date, end_date, budget, rate_type |
-| `core.campaigns` | id, platform_id, platform_campaign_id, name, io_id (nullable) |
-| `core.campaign_aliases` | campaign_id, alias, source (rule/ai/human), confidence |
-| `core.daily_delivery` | campaign_id, date, spend, impressions, clicks, conversions, run_id — unique (campaign_id, date) |
-| `core.invoices` | id, kind (platform/client), vendor, number, period_start, period_end, total, vat, file_path, status |
-| `core.invoice_lines` | invoice_id, campaign_ref, amount, extracted_confidence |
-| `core.credit_notes` | id, original_invoice_id, amount |
-| `core.reconciliation_results` | period, client_id, platform_id, planned, delivered, invoiced, variance, status |
-| `app.users` | id, email, role (admin/planner/finance), client scope |
-| `app.issues` | id, type, severity, amount, explanation, proposed_action, status, decided_by, decided_at |
-| `app.audit_log` | id, actor, action, entity, payload, created_at (insert-only) |
-| `app.pipeline_runs` | id, started_at, finished_at, status, cost_eur, tokens |
-| `eval.answer_key` | id, error_type, entity_ref, period, magnitude, expected_detector |
+| `raw.meta_responses`, `raw.google_responses`, `raw.tiktok_responses` | id, run_id, page, fetched_at, payload (JSONB) — unique (run_id, page) |
+| `core.clients` | id, name (unique), industry, billing_model (markup/mgmt_fee/client_owned), markup_pct, mgmt_fee |
+| `core.platforms` | id, name (unique), timezone (default), metric_map |
+| `core.ad_accounts` | id, client_id, platform_id, external_account_id, timezone — unique (platform_id, external_account_id) |
+| `core.insertion_orders` | id, client_id, platform_id, campaign_ref, start_date, end_date, budget, rate_type (cpm/cpc/flat) — unique (client_id, platform_id, campaign_ref, start_date) |
+| `core.campaigns` | id, platform_id, ad_account_id, platform_campaign_id, name, io_id (nullable) — unique (platform_id, platform_campaign_id) |
+| `core.campaign_aliases` | campaign_id, alias (PK), source (rule/ai/human), confidence |
+| `core.daily_delivery` | id, campaign_id, date, spend, impressions, clicks, conversions — unique (campaign_id, date); index (date) |
+| `core.invoices` | id, kind (platform/client), vendor, number, client_id, platform_id, issue_date, period_start, period_end, subtotal, vat, total, file_path, status — unique (vendor, number); platform needs platform_id, client needs client_id |
+| `core.invoice_lines` | id, invoice_id, line_no, campaign_ref, campaign_id (resolved), description, amount, extracted_confidence — unique (invoice_id, line_no) |
+| `core.credit_notes` | id, original_invoice_id, vendor, number, issue_date, amount, reason, file_path — unique (vendor, number) |
+| `core.reconciliation_results` | id, period (1st of month), client_id, platform_id, planned, delivered, invoiced, client_invoiced, expected_client_amount, variance, status — unique (period, client_id, platform_id) |
+| `app.users` | id, email (unique), role (admin/planner/finance) |
+| `app.user_client_scope` | user_id, client_id (PK) — client scope per user |
+| `app.issues` | id, dedup_key (unique), type, severity, client_id, platform_id, period, entity_type, entity_id, amount, explanation, proposed_action, status, decided_by, decided_at, decision_note |
+| `app.audit_log` | id, actor, action, entity, entity_id, payload (insert-only, enforced by trigger) |
+| `app.pipeline_runs` | id (UUID), started_at, finished_at, status, cost_eur, tokens, details |
+| `eval.answer_key` | id, error_type, entity_ref, period_start, period_end, magnitude, expected_detector, details — no FKs |
 
-Money: `NUMERIC(12,2)`, EUR. Timestamps: UTC.
+All tables: `created_at`. Pipeline-upserted tables: `updated_at` (trigger). Pipeline-written tables: `run_id` (UUID, no FK).
+Money: `NUMERIC(12,2)`, EUR (exception: `cost_eur` is `NUMERIC(12,6)`, decision 014). Timestamps: `timestamptz`, UTC.
+Financial FKs use `ON DELETE RESTRICT`. Conventions: decisions 012–014.
 
 ### 6.3 Database roles
 | Role | Rights |
