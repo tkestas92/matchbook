@@ -27,7 +27,7 @@ New entries go at the bottom. Format: context → decision → consequences.
 
 ## 005 — Money as Decimal / NUMERIC(12,2), EUR only
 **Context:** reconciliation compares amounts to the cent; floats introduce rounding errors.
-**Decision:** `Decimal` in Python, `NUMERIC(12,2)` in PostgreSQL, single currency EUR.
+**Decision:** `Decimal` in Python, `NUMERIC(12,2)` in PostgreSQL for all billable amounts, single currency EUR. The one exception is internal pipeline cost (decision 014).
 **Consequences:** exact comparisons; multi-currency is out of scope.
 
 ## 006 — UTC storage, agency timezone for reporting
@@ -65,10 +65,10 @@ New entries go at the bottom. Format: context → decision → consequences.
 **Decision:** enum-like columns are `TEXT` with a named `CHECK` (not PG `ENUM`). `run_id` is a `UUID NOT NULL` on every pipeline-written row with **no** FK to `app.pipeline_runs`. `updated_at` is set by a `BEFORE UPDATE` trigger (`core.set_updated_at()`), not by the ORM. `app.audit_log` is insert-only via a trigger that rejects UPDATE, DELETE and TRUNCATE. FKs from financial tables use `ON DELETE RESTRICT`; `eval` has no FKs into `core`/`app`.
 **Consequences:** adding an enum value is a one-line migration; `core` does not depend on `app`; upserts keep `updated_at` correct; audit history and financial rows cannot vanish by accident.
 
-## 013 — Ad accounts carry the reporting timezone
-**Context:** Meta and Google report in the *account* timezone (plan §5.3), and a campaign without an IO had no link to a client.
-**Decision:** add `core.ad_accounts` (client, platform, external account id, timezone); every campaign belongs to an ad account. `core.platforms.timezone` stays as the platform default.
-**Consequences:** delivery can be converted from the right timezone per account; every campaign has a client even before it is matched to an IO.
+## 013 — Ad accounts carry the reporting timezone; IO unique includes start_date
+**Context:** Meta and Google report in the *account* timezone (plan §5.3), and a campaign without an IO had no link to a client. The same `campaign_ref` can be reused on a later flight.
+**Decision:** add `core.ad_accounts` (client, platform, external account id, timezone); every campaign belongs to an ad account. `core.platforms.timezone` stays as the platform default. `core.insertion_orders` is unique on `(client_id, platform_id, campaign_ref, start_date)`.
+**Consequences:** delivery converts from the right timezone per account; every campaign has a client before IO matching; renewals do not collide with prior flights.
 
 ## 014 — Pipeline cost uses NUMERIC(12,6)
 **Context:** money is `NUMERIC(12,2)` (decision 005), but a single LLM call costs fractions of a cent.
@@ -93,3 +93,23 @@ New entries go at the bottom. Format: context → decision → consequences.
 **Context:** the generator needs realistic CTR, CPC, CPM and CVR; the Kaggle dataset has no dates, so only ratios can be used.
 **Decision:** `generator/build_distributions.py` drops unusable rows (zero clicks, zero or negative spend, impressions below clicks), computes per-row ratios and stores moments, percentiles and a lognormal fit (MLE on ln x, stdlib only, no new dependency) in the committed `generator/distributions.json`. Exact zeros (CVR) are recorded as `zero_share` and excluded from the fit. The CSV is never committed and tests read only the JSON.
 **Consequences:** CI needs no dataset; lognormal fits CPC loosely (see `ks_distance`), which is acceptable for synthetic data.
+
+## 018 — Local Postgres bound to localhost only
+**Context:** Docker Compose published Postgres on all interfaces (`0.0.0.0`), which is unnecessary for local development.
+**Decision:** bind the host port to `127.0.0.1` only (`127.0.0.1:${POSTGRES_PORT}:5432` in `docker-compose.yml`).
+**Consequences:** the database is reachable from the host machine but not from other devices on the network.
+
+## 019 — Ruff + pre-commit as the lint gate
+**Context:** stage 0 needs a single, reproducible style/lint check for agents and humans.
+**Decision:** configure ruff in `pyproject.toml` (line-length 100, target `py312`, select `E,F,I,UP,B`, ignore `E501`); `make lint` / `make format` wrap ruff; `.pre-commit-config.yaml` runs ruff `--fix` and ruff format.
+**Consequences:** one tool for lint and format; CI and local hooks share the same rules.
+
+## 020 — CI on GitHub Actions with a throwaway Postgres
+**Context:** PRs need `migrate` + `lint` + `test` without local Docker or repository secrets.
+**Decision:** `.github/workflows/ci.yml` runs on push to `main` and on pull requests; one `test` job on `ubuntu-latest` with a Postgres 16 service container and throwaway credentials/passwords in the workflow env.
+**Consequences:** every PR gets a green/red check; no secrets to rotate for the basic pipeline.
+
+## 021 — Config default tests ignore the outer environment
+**Context:** CI sets `APP_ENV=test`; a settings-default test failed because it inherited that value.
+**Decision:** tests that assert Settings defaults clear those env vars with `monkeypatch.delenv(..., raising=False)` before constructing `Settings(_env_file=None)`.
+**Consequences:** default-value tests pass locally and in CI regardless of workflow or shell env.
