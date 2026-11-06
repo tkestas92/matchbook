@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: matchbook
+          POSTGRES_PASSWORD: ci-throwaway
+          POSTGRES_DB: matchbook
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U matchbook -d matchbook"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+psycopg://matchbook:ci-throwaway@localhost:5432/matchbook
+      APP_ENV: test
+      AGENCY_TIMEZONE: Europe/Vilnius
+      ETL_DB_PASSWORD: ci-etl
+      APP_DB_PASSWORD: ci-app
+      AGENT_RO_DB_PASSWORD: ci-agent-ro
+      EVAL_RUNNER_DB_PASSWORD: ci-eval-runner
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Migrate
+        run: make migrate
+
+      - name: Lint
+        run: make lint
+
+      - name: Test
+        run: make test

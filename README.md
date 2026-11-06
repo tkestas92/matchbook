@@ -1,5 +1,7 @@
 # Matchbook
 
+[![CI](https://github.com/tkestas92/matchbook/actions/workflows/ci.yml/badge.svg)](https://github.com/tkestas92/matchbook/actions/workflows/ci.yml)
+
 Three-way media reconciliation & reporting for agencies
 
 **Status:** work in progress
