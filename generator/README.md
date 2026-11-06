@@ -54,3 +54,33 @@ It prints counts, totals and a digest; the same seed always gives the same diges
 
 Ratio spread comes from `distributions.json`; mean levels from `config.yaml` (decision 022).
 No documents and no planted errors yet; money is always `Decimal`.
+
+## Documents (`generator/documents/`)
+
+Renders the true world into the documents an agency sees. Run:
+
+```
+uv run python -m generator.documents
+```
+
+Output (gitignored, replaced on every run):
+
+```
+data/generated/
+  manifest.json                                   # sha256 of every file
+  plans/<CLIENT>_media_plan.xlsx                  # IOs: platform, campaign_ref, flight, budget
+  invoices/platform/<platform>/<yyyy-mm>/<number>.pdf|.json
+  invoices/client/<CLIENT>/<yyyy-mm>/<number>.pdf|.json
+  credit_notes/<platform>/<yyyy-mm>/<number>.pdf|.json
+```
+
+- **Platform invoices** (platform → agency): one per ad account and month, lines = delivered spend
+  per `campaign_ref` in the platform timezone. Three layouts: Meta-, Google- and TikTok-like.
+- **Agency invoices** (agency → client): media at cost, credit-note lines, then the markup commission
+  or management fee. Client-owned clients get only a media plan (the platform bills them directly).
+- **Credit notes**: `documents.credit_notes.count` of them, each linked to a platform invoice and
+  applied on the same period's client invoice.
+- **Ground truth**: a JSON next to every PDF (vendor, number, dates, period, lines with
+  `campaign_ref`, subtotal, VAT 21% `ROUND_HALF_UP`, total). Money is a string for exact `Decimal`.
+- English only for now; no planted errors (task 1.3). Same seed → identical files (decision 024).
+- Fonts: DejaVu Sans (`generator/fonts/`, see `LICENSE-DejaVu.txt`) for Lithuanian letters.

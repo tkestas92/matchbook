@@ -13,6 +13,8 @@ dependencies = [
     "pydantic-settings",
     "python-dotenv",
     "pyyaml>=6.0.3",
+    "reportlab>=5.1.0",
+    "openpyxl>=3.1.5",
 ]
 
 [dependency-groups]
@@ -20,6 +22,7 @@ dev = [
     "pytest",
     "ruff",
     "pre-commit",
+    "pypdf>=6.21.4",
 ]
 
 [tool.uv]
