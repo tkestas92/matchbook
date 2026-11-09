@@ -274,6 +274,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "alembic" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "openpyxl" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic-settings" },
@@ -286,7 +287,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "pre-commit" },
     { name = "pypdf" },
     { name = "pytest" },
@@ -297,6 +297,7 @@ dev = [
 requires-dist = [
     { name = "alembic" },
     { name = "fastapi" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "psycopg", extras = ["binary"] },
     { name = "pydantic-settings" },
@@ -309,7 +310,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx", specifier = ">=0.28.1" },
     { name = "pre-commit" },
     { name = "pypdf", specifier = ">=6.21.4" },
     { name = "pytest" },
