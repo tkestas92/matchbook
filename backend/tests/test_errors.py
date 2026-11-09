@@ -18,6 +18,7 @@ from generator.errors import (
     ANSWER_KEY_PATH,
     DEFAULT_MIN_PER_TYPE,
     ERROR_TYPES,
+    REFERENCE_PATH,
     AnswerKeyEntry,
     ErrorsConfig,
     PlantedOutput,
@@ -382,7 +383,8 @@ def test_no_errors_gives_the_clean_output(
     documents_only = {
         path: digest
         for path, digest in planted_files.items()
-        if not path.startswith("delivery/") and path != ANSWER_KEY_PATH.as_posix()
+        if not path.startswith("delivery/")
+        and path not in (ANSWER_KEY_PATH.as_posix(), REFERENCE_PATH.as_posix())
     }
     assert documents_only == clean_files
 

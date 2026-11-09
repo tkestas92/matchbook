@@ -41,6 +41,7 @@ from generator.world import (
 
 DEFAULT_MIN_PER_TYPE = 3
 ANSWER_KEY_PATH = Path("answer_key.json")
+REFERENCE_PATH = Path("reference.json")
 DELIVERY_DIR = Path("delivery")
 RENAMED_LABELS = ("Always-on", "Prospecting", "Retargeting", "Seasonal push", "Promo")
 
@@ -811,10 +812,40 @@ def reported_delivery_files(world: World, delivery: Iterable[ReportedDay]) -> di
     return files
 
 
+def reference_payload(world: World) -> dict[str, Any]:
+    """The agency's own registry (decision 028): built from the world, never from planted errors."""
+    return {
+        "clients": [
+            {
+                "code": client.code,
+                "name": client.name,
+                "industry": client.industry,
+                "billing_model": client.billing_model,
+                "markup_pct": None if client.markup_pct is None else str(client.markup_pct),
+                "mgmt_fee": None if client.mgmt_fee is None else str(client.mgmt_fee),
+            }
+            for client in world.clients
+        ],
+        "platforms": [
+            {"name": platform.key, "timezone": platform.timezone} for platform in world.platforms
+        ],
+        "ad_accounts": [
+            {
+                "client_code": account.client_code,
+                "platform": account.platform_key,
+                "external_account_id": account.external_account_id,
+                "timezone": account.timezone,
+            }
+            for account in world.ad_accounts
+        ],
+    }
+
+
 def planted_files(world: World, config: ErrorsConfig, planted: PlantedOutput) -> dict[Path, Any]:
     return {
         **reported_delivery_files(world, planted.delivery),
         ANSWER_KEY_PATH: answer_key_payload(world, config, planted),
+        REFERENCE_PATH: reference_payload(world),
     }
 
 
