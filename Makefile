@@ -1,8 +1,8 @@
 .DEFAULT_GOAL := help
-.PHONY: help up down roles migrate test lint format generate pipeline eval
+.PHONY: help up down roles migrate test lint format generate mock-apis pipeline eval
 
 help: ## List available targets
-	@grep -E '^[a-z_]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
+	@grep -E '^[a-z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
 
 up: ## Start local services
 	docker compose up -d --wait
@@ -29,6 +29,9 @@ format: ## Auto-format and fix lint issues
 
 generate: ## Generate synthetic data with planted errors into data/generated/
 	uv run python -m generator
+
+mock-apis: ## Serve mock Meta/Google/TikTok APIs on MOCK_PLATFORMS_PORT
+	uv run python -m mock_platforms
 
 pipeline: ## Run the nightly pipeline without Airflow (stage 1)
 	@echo "not yet implemented (stage 1)"
