@@ -166,6 +166,7 @@ Financial FKs use `ON DELETE RESTRICT`. Conventions: decisions 012–014.
 ## 7. Pipeline (stage 1)
 Each step is a plain Python function runnable via `make pipeline`; Airflow only orchestrates them.
 
+0. Load reference data (clients, platforms, ad accounts) → `core` (decision 028)
 1. Ingest each platform → `raw` (retries with backoff; failures recorded, other platforms continue)
 2. Normalize via metric dictionary → `core.daily_delivery` (upsert on (campaign_id, date))
 3. Quality checks

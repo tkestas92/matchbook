@@ -100,6 +100,7 @@ It writes the documents (with errors) plus:
 data/generated/
   delivery/<platform>/<account_id>.json   # what the platform API reports (mock APIs serve it)
   answer_key.json                         # one record per planted error — evals only
+  reference.json                          # clients, platforms, ad accounts — the agency's registry
 ```
 
 | # | Error | What changes | Magnitude (EUR, net) |
