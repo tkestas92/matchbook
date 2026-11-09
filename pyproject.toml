@@ -23,6 +23,7 @@ dev = [
     "ruff",
     "pre-commit",
     "pypdf>=6.21.4",
+    "httpx>=0.28.1",
 ]
 
 [tool.uv]
