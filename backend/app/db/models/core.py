@@ -47,6 +47,7 @@ class Client(CreatedAtMixin, UpdatedAtMixin, Base):
     )
 
     id: Mapped[IntPk]
+    code: Mapped[str] = mapped_column(unique=True)
     name: Mapped[str] = mapped_column(unique=True)
     industry: Mapped[str]
     billing_model: Mapped[str]

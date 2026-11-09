@@ -130,6 +130,24 @@ def test_load_updates_a_changed_account_owner(pipeline_db: PipelineDb, tmp_path:
     assert owner == "UAB Aaa"
 
 
+def test_load_fills_client_codes(pipeline_db: PipelineDb, tmp_path: Path) -> None:
+    load_reference(uuid.uuid4(), write_reference(tmp_path, small_reference()), pipeline_db.etl)
+    with pipeline_db.owner.connect() as conn:
+        codes = conn.execute(text("SELECT code, name FROM core.clients ORDER BY code")).all()
+    assert [tuple(row) for row in codes] == [("AAA", "UAB Aaa"), ("BBB", "UAB Bbb")]
+
+
+def test_renamed_client_stays_the_same_row(pipeline_db: PipelineDb, tmp_path: Path) -> None:
+    payload = small_reference()
+    load_reference(uuid.uuid4(), write_reference(tmp_path, payload), pipeline_db.etl)
+    payload["clients"][0]["name"] = "UAB Aaa Group"
+    load_reference(uuid.uuid4(), write_reference(tmp_path, payload), pipeline_db.etl)
+    assert counts(pipeline_db.owner)["core.clients"] == 2
+    with pipeline_db.owner.connect() as conn:
+        name = conn.execute(text("SELECT name FROM core.clients WHERE code = 'AAA'")).scalar_one()
+    assert name == "UAB Aaa Group"
+
+
 def test_platform_without_metric_map_fails() -> None:
     with pytest.raises(ReferenceDataError, match="snapchat"):
         metric_map_for("snapchat")

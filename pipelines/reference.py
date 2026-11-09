@@ -39,9 +39,10 @@ def metric_map_for(platform: str) -> dict[str, str]:
 
 
 def upsert_clients(conn: Connection, clients: list[dict[str, Any]]) -> dict[str, int]:
-    """Client ids by client code; the code exists only in the file, the key in `core` is the name."""
+    """Client ids by client code, the stable key: a renamed client stays the same row."""
     rows = [
         {
+            "code": client["code"],
             "name": client["name"],
             "industry": client["industry"],
             "billing_model": client["billing_model"],
@@ -53,15 +54,15 @@ def upsert_clients(conn: Connection, clients: list[dict[str, Any]]) -> dict[str,
     statement = insert(Client).values(rows)
     conn.execute(
         statement.on_conflict_do_update(
-            index_elements=["name"],
+            index_elements=["code"],
             set_={
                 column: statement.excluded[column]
-                for column in ("industry", "billing_model", "markup_pct", "mgmt_fee")
+                for column in ("name", "industry", "billing_model", "markup_pct", "mgmt_fee")
             },
         )
     )
-    ids = {row.name: row.id for row in conn.execute(select(Client.name, Client.id))}
-    return {client["code"]: ids[client["name"]] for client in clients}
+    ids = {row.code: row.id for row in conn.execute(select(Client.code, Client.id))}
+    return {client["code"]: ids[client["code"]] for client in clients}
 
 
 def upsert_platforms(conn: Connection, platforms: list[dict[str, Any]]) -> dict[str, int]:

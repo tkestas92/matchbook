@@ -133,7 +133,7 @@ Defined in `backend/app/db/models/`, created by `backend/migrations/`.
 | Table | Key fields |
 |---|---|
 | `raw.meta_responses`, `raw.google_responses`, `raw.tiktok_responses` | id, run_id, account_id, period_start, period_end, page, fetched_at, payload (JSONB), body (exact bytes) — unique (account_id, period_start, period_end, page) |
-| `core.clients` | id, name (unique), industry, billing_model (markup/mgmt_fee/client_owned), markup_pct, mgmt_fee |
+| `core.clients` | id, code (unique), name (unique), industry, billing_model (markup/mgmt_fee/client_owned), markup_pct, mgmt_fee |
 | `core.platforms` | id, name (unique), timezone (default), metric_map |
 | `core.ad_accounts` | id, client_id, platform_id, external_account_id, timezone — unique (platform_id, external_account_id) |
 | `core.insertion_orders` | id, client_id, platform_id, campaign_ref, start_date, end_date, budget, rate_type (cpm/cpc/flat) — unique (client_id, platform_id, campaign_ref, start_date) |
@@ -170,7 +170,7 @@ Each step is a plain Python function runnable via `make pipeline`; Airflow only 
 1. Ingest each platform → `raw` (retries with backoff; failures recorded, other platforms continue)
 2. Normalize via metric dictionary → `core.daily_delivery` (upsert on (campaign_id, date))
 3. Quality checks
-4. Load Excel plans → `core.insertion_orders`
+4. Load Excel plans → `core.insertion_orders`; link `core.campaigns.io_id` (decision 029)
 5. Load invoices (stage 1: ground-truth JSON; stage 2: LLM extraction)
 6. Reconcile → `core.reconciliation_results` + `app.issues`
 7. Pacing

@@ -10,6 +10,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from itertools import batched
 from typing import Any
 
+from app.db.base import Base
 from app.db.models.core import AdAccount, Campaign, CampaignAlias, DailyDelivery, Platform
 from app.db.session import create_etl_engine
 from sqlalchemy import Connection, Engine, select
@@ -338,7 +339,7 @@ def load_platform_snapshots(conn: Connection, api: PlatformApi) -> list[Snapshot
 
 def upsert(
     conn: Connection,
-    model: type[Campaign] | type[CampaignAlias] | type[DailyDelivery],
+    model: type[Base],
     rows: Sequence[dict[str, Any]],
     keys: tuple[str, ...],
     updated: tuple[str, ...],

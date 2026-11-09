@@ -120,3 +120,6 @@ candidates still available. Each client × platform × month carries at most one
 live in the `errors:` block of `config.yaml`. Error #10 (prompt injection) comes in stage 2.
 Application code must never read `answer_key.json`; it reaches `eval.answer_key` only through
 the eval loader (task 1.11).
+
+Each client's `code` in `reference.json` fills `core.clients.code`, which plans and invoices
+resolve against (decision 029).
