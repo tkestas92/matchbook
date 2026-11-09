@@ -132,7 +132,7 @@ Defined in `backend/app/db/models/`, created by `backend/migrations/`.
 
 | Table | Key fields |
 |---|---|
-| `raw.meta_responses`, `raw.google_responses`, `raw.tiktok_responses` | id, run_id, page, fetched_at, payload (JSONB) — unique (run_id, page) |
+| `raw.meta_responses`, `raw.google_responses`, `raw.tiktok_responses` | id, run_id, account_id, period_start, period_end, page, fetched_at, payload (JSONB), body (exact bytes) — unique (account_id, period_start, period_end, page) |
 | `core.clients` | id, name (unique), industry, billing_model (markup/mgmt_fee/client_owned), markup_pct, mgmt_fee |
 | `core.platforms` | id, name (unique), timezone (default), metric_map |
 | `core.ad_accounts` | id, client_id, platform_id, external_account_id, timezone — unique (platform_id, external_account_id) |

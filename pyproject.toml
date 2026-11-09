@@ -15,6 +15,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "reportlab>=5.1.0",
     "openpyxl>=3.1.5",
+    "httpx>=0.28.1",
 ]
 
 [dependency-groups]
@@ -23,7 +24,6 @@ dev = [
     "ruff",
     "pre-commit",
     "pypdf>=6.21.4",
-    "httpx>=0.28.1",
 ]
 
 [tool.uv]

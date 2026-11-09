@@ -391,8 +391,9 @@ def test_etl_writes_raw_and_core(as_role: Callable[[str], Connection]) -> None:
     conn = as_role("etl")
     conn.execute(
         text(
-            "INSERT INTO raw.meta_responses (page, fetched_at, payload, run_id) "
-            "VALUES (1, now(), '{}', gen_random_uuid())"
+            "INSERT INTO raw.meta_responses (account_id, period_start, period_end, page, "
+            "fetched_at, payload, body, run_id) "
+            "VALUES ('1', '2026-10-01', '2026-10-31', 1, now(), '{}', '{}', gen_random_uuid())"
         )
     )
     conn.execute(text("UPDATE core.daily_delivery SET clicks = clicks"))
