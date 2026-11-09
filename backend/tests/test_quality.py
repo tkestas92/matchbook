@@ -218,8 +218,8 @@ def seed_account(db: PipelineDb) -> tuple[int, int]:
     with db.owner.begin() as conn:
         client_id = conn.execute(
             text(
-                "INSERT INTO core.clients (name, industry, billing_model, mgmt_fee) "
-                "VALUES ('UAB Aaa', 'food', 'mgmt_fee', 100) RETURNING id"
+                "INSERT INTO core.clients (code, name, industry, billing_model, mgmt_fee) "
+                "VALUES ('AAA', 'UAB Aaa', 'food', 'mgmt_fee', 100) RETURNING id"
             )
         ).scalar_one()
         platform_id = conn.execute(

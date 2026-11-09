@@ -47,8 +47,9 @@ def seed_client(conn: Connection, platform_id: int, run_id: uuid.UUID) -> int:
     suffix = uuid.uuid4().hex[:8]
     client_id = insert(
         conn,
-        "INSERT INTO core.clients (name, industry, billing_model) "
-        "VALUES (:n, 'retail', 'client_owned') RETURNING id",
+        "INSERT INTO core.clients (code, name, industry, billing_model) "
+        "VALUES (:c, :n, 'retail', 'client_owned') RETURNING id",
+        c=suffix,
         n=f"client-{suffix}",
     )
     params = {"c": client_id, "p": platform_id, "r": run_id, "s": suffix}

@@ -3,6 +3,7 @@
 Needs the local Postgres (`make up`); skipped when it is unreachable.
 """
 
+import json
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -88,8 +89,9 @@ def seed_campaign(conn: Connection) -> dict[str, object]:
     suffix = uuid.uuid4().hex[:8]
     client_id = insert(
         conn,
-        "INSERT INTO core.clients (name, industry, billing_model, markup_pct) "
-        "VALUES (:name, 'retail', 'markup', 15) RETURNING id",
+        "INSERT INTO core.clients (code, name, industry, billing_model, markup_pct) "
+        "VALUES (:code, :name, 'retail', 'markup', 15) RETURNING id",
+        code=suffix,
         name=f"client-{suffix}",
     )
     platform_id = insert(
@@ -266,8 +268,8 @@ def test_updated_at_advances_on_update(engine: Engine) -> None:
     with engine.begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO core.clients (name, industry, billing_model) "
-                "VALUES (:n, 'retail', 'client_owned')"
+                "INSERT INTO core.clients (code, name, industry, billing_model) "
+                "VALUES (:n, :n, 'retail', 'client_owned')"
             ),
             {"n": name},
         )
@@ -295,3 +297,112 @@ def test_downgrade_then_upgrade_round_trips(database_url: str) -> None:
             assert existing_tables(engine) == EXPECTED_TABLES
         finally:
             engine.dispose()
+
+
+def insert_client_without_code(engine: Engine, name: str) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO core.clients (name, industry, billing_model) "
+                "VALUES (:n, 'retail', 'client_owned')"
+            ),
+            {"n": name},
+        )
+
+
+def write_reference(path: Path, *clients: tuple[str, str]) -> Path:
+    payload = {"clients": [{"code": code, "name": name} for code, name in clients]}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def has_code_column(engine: Engine) -> bool:
+    return "code" in {c["name"] for c in inspect(engine).get_columns("clients", schema="core")}
+
+
+def test_client_code_is_backfilled_by_name(database_url: str, tmp_path: Path) -> None:
+    with temporary_database(database_url) as url:
+        config = alembic_config(url)
+        engine = create_engine(url)
+        try:
+            command.upgrade(config, "0003")
+            insert_client_without_code(engine, "UAB Aaa")
+            insert_client_without_code(engine, "UAB Bbb")
+            config.attributes["reference_path"] = write_reference(
+                tmp_path / "reference.json", ("AAA", "UAB Aaa"), ("BBB", "UAB Bbb"), ("CCC", "New")
+            )
+            command.upgrade(config, "head")
+            with engine.connect() as conn:
+                rows = conn.execute(text("SELECT code, name FROM core.clients ORDER BY code")).all()
+            assert [tuple(r) for r in rows] == [("AAA", "UAB Aaa"), ("BBB", "UAB Bbb")]
+        finally:
+            engine.dispose()
+
+
+def test_client_code_backfill_aborts_on_an_unmatched_client(
+    database_url: str, tmp_path: Path
+) -> None:
+    with temporary_database(database_url) as url:
+        config = alembic_config(url)
+        engine = create_engine(url)
+        try:
+            command.upgrade(config, "0003")
+            insert_client_without_code(engine, "UAB Aaa")
+            config.attributes["reference_path"] = write_reference(
+                tmp_path / "reference.json", ("BBB", "UAB Bbb")
+            )
+            with pytest.raises(RuntimeError, match="UAB Aaa"):
+                command.upgrade(config, "head")
+            assert not has_code_column(engine)
+        finally:
+            engine.dispose()
+
+
+def test_client_code_backfill_aborts_without_the_reference_file(
+    database_url: str, tmp_path: Path
+) -> None:
+    with temporary_database(database_url) as url:
+        config = alembic_config(url)
+        engine = create_engine(url)
+        try:
+            command.upgrade(config, "0003")
+            insert_client_without_code(engine, "UAB Aaa")
+            config.attributes["reference_path"] = tmp_path / "missing.json"
+            with pytest.raises(RuntimeError, match="make generate"):
+                command.upgrade(config, "head")
+        finally:
+            engine.dispose()
+
+
+def test_empty_clients_table_never_reads_the_reference_file(
+    database_url: str, tmp_path: Path
+) -> None:
+    with temporary_database(database_url) as url:
+        config = alembic_config(url)
+        engine = create_engine(url)
+        try:
+            config.attributes["reference_path"] = tmp_path / "missing.json"
+            command.upgrade(config, "head")
+            assert has_code_column(engine)
+        finally:
+            engine.dispose()
+
+
+def test_client_code_is_required(conn: Connection) -> None:
+    with pytest.raises(IntegrityError, match="code"):
+        conn.execute(
+            text(
+                "INSERT INTO core.clients (name, industry, billing_model) "
+                "VALUES ('x', 'retail', 'client_owned')"
+            )
+        )
+
+
+def test_client_code_is_unique(conn: Connection) -> None:
+    sql = (
+        "INSERT INTO core.clients (code, name, industry, billing_model) "
+        "VALUES ('DUP', :n, 'retail', 'client_owned')"
+    )
+    conn.execute(text(sql), {"n": "first"})
+    with pytest.raises(IntegrityError, match="uq_clients_code"):
+        conn.execute(text(sql), {"n": "second"})
