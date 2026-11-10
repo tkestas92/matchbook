@@ -5,12 +5,19 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from app.reconciliation.models import (
     BILLING_MARKUP,
+    PACING_RED,
+    PACING_YELLOW,
+    PHASE_CLOSED,
     BillingTerms,
     BoundaryShift,
     DeliveryGap,
     Invoice,
     Line,
+    PacingDay,
+    PacingOrder,
+    PacingResult,
     Slot,
+    ZeroSpendRun,
 )
 
 OVERCHARGE = "reconciliation_overcharge"
@@ -24,6 +31,8 @@ BUDGET_UNDERSPEND = "reconciliation_budget_underspend"
 WRONG_MARKUP = "reconciliation_wrong_markup"
 CREDIT_NOT_APPLIED = "reconciliation_credit_not_applied"
 CREDIT_OVER_APPLIED = "reconciliation_credit_over_applied"
+PACING_OVERPACING = "pacing_overpacing"
+PACING_UNDERPACING = "pacing_underpacing"
 
 SEVERITIES = {
     OVERCHARGE: "high",
@@ -51,6 +60,15 @@ PROPOSED_ACTIONS = {
     WRONG_MARKUP: "Hold the client invoice and correct the fee before it is sent.",
     CREDIT_NOT_APPLIED: "Hold the client invoice and pass the platform credit on to the client.",
     CREDIT_OVER_APPLIED: "Check which credit the client invoice applies before it is sent.",
+}
+
+# Pacing severity follows the status, not the type.
+PACING_SEVERITIES = {PACING_YELLOW: "medium", PACING_RED: "high"}
+PACING_ACTIONS = {
+    PACING_OVERPACING: "Check with the planner why spend runs ahead of plan; if the flight is "
+    "still running, lower the daily budget so it lasts.",
+    PACING_UNDERPACING: "Check with the planner why spend runs behind plan; if the flight is "
+    "still running, raise delivery or release the budget.",
 }
 
 PERCENT_CENTS = Decimal("0.01")
@@ -201,3 +219,55 @@ def credit_explanation(
     if terms.model == BILLING_MARKUP:
         text += f" The {terms.markup_pct}% commission is also charged on that amount."
     return text
+
+
+def cents(amount: Decimal) -> Decimal:
+    return amount.quantize(PERCENT_CENTS, rounding=ROUND_HALF_UP)
+
+
+def share_text(ratio: Decimal) -> str:
+    return f"{cents(ratio * 100)}%"
+
+
+def order_text(order: PacingOrder) -> str:
+    return (
+        f"{order.client} {order.platform} {order.campaign_ref} "
+        f"({order.start_date.isoformat()} to {order.end_date.isoformat()})"
+    )
+
+
+def pace_text(day: PacingDay, order: PacingOrder) -> str:
+    gap = day.gap
+    direction = "ahead of" if gap > 0 else "behind"
+    flight_days = (order.end_date - order.start_date).days + 1
+    return (
+        f"on {day.day.isoformat()} (day {day.elapsed_days} of {flight_days}) spend was "
+        f"{eur(cents(day.cumulative_actual))}, {eur(cents(abs(gap)))} {direction} the plan of "
+        f"{eur(cents(day.cumulative_plan))} to date, and at the recent daily average it was heading "
+        f"for {eur(cents(day.forecast))} ({share_text(day.ratio)} of the "
+        f"{eur(order.budget)} budget)"
+    )
+
+
+def zero_spend_text(run: ZeroSpendRun | None) -> str:
+    if run is None:
+        return ""
+    return (
+        f" Spend was zero from {run.first_day.isoformat()} to {run.last_day.isoformat()}, "
+        "which is the same problem, so it is reported here."
+    )
+
+
+def pacing_explanation(
+    result: PacingResult, day: PacingDay, zero_spend: ZeroSpendRun | None
+) -> str:
+    order = result.order
+    text = f"{order_text(order)}: pacing was {day.status}; {pace_text(day, order)}."
+    if result.phase == PHASE_CLOSED and result.current is not None:
+        final = result.current.cumulative_actual
+        text += (
+            f" The flight ended at {eur(cents(final))} ({share_text(final / order.budget)} of "
+            f"budget); spend peaked {eur(cents(abs(result.peak_gap)))} "
+            f"{'ahead of' if result.peak_gap > 0 else 'behind'} plan."
+        )
+    return text + zero_spend_text(zero_spend)

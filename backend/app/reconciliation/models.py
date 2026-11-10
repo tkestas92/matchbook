@@ -227,3 +227,77 @@ class ReconciliationOutcome:
     results: list[SlotResult]
     issues: list[IssueDraft]
     gap_notes: list[GapNote]
+
+
+PACING_GREEN = "green"
+PACING_YELLOW = "yellow"
+PACING_RED = "red"
+PHASE_NOT_STARTED = "not_started"
+PHASE_RUNNING = "running"
+PHASE_CLOSED = "closed"
+
+
+@dataclass(frozen=True)
+class ZeroSpendRun:
+    """Consecutive zero-spend days of a campaign, as quality reports them."""
+
+    first_day: date
+    last_day: date
+    issue_key: str  # The key of the quality issue about this same problem.
+
+
+@dataclass(frozen=True)
+class PacingOrder:
+    """An insertion order with the daily spend of its linked campaigns, summed per day."""
+
+    client: str
+    platform: str
+    campaign_ref: str
+    start_date: date
+    end_date: date
+    budget: Decimal
+    campaign_count: int
+    spend: Mapping[date, Decimal]  # Only days with a reported row; a missing day is unknown.
+    zero_spend_runs: tuple[ZeroSpendRun, ...] = ()
+
+
+@dataclass(frozen=True)
+class PacingDay:
+    """The order's pace as it looked at the end of `day`."""
+
+    day: date
+    elapsed_days: int
+    cumulative_plan: Decimal
+    cumulative_actual: Decimal
+    forecast: Decimal
+    ratio: Decimal  # Forecast as a share of budget.
+    status: str
+
+    @property
+    def gap(self) -> Decimal:
+        return self.cumulative_actual - self.cumulative_plan
+
+
+@dataclass(frozen=True)
+class PacingResult:
+    order: PacingOrder
+    phase: str
+    current: PacingDay | None  # None until the flight starts.
+    worst: PacingDay | None  # The worst day from the minimum day on; None before it.
+    peak_gap: Decimal  # Signed cumulative actual - plan with the largest size.
+
+
+@dataclass(frozen=True)
+class PacingDraft:
+    """An issue draft that takes over the quality zero-spend issue when there is one."""
+
+    issue: IssueDraft
+    quality_key: str | None
+
+
+@dataclass(frozen=True)
+class PacingOutcome:
+    as_of: date
+    results: list[PacingResult]
+    drafts: list[PacingDraft]
+    skipped: list[PacingOrder]  # No linked campaign, or no budget to pace against.

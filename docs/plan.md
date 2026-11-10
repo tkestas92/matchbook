@@ -77,7 +77,7 @@ The generator works in three steps:
 - Configured in `generator/config.yaml` (clients, period, platforms, error rate).
 - Ratios (CTR, CPC, conversion rate) come from the Kaggle "Clicks Conversion Tracking" dataset (`generator/distributions.json`); daily time series are generated (weekday rhythm, seasonality, noise).
 
-Default world: **8 fictional Lithuanian clients**, **May–October 2026** (November = current month for pacing), **Meta, Google, TikTok**.
+Default world: **8 fictional Lithuanian clients**, **May–October 2026** (every month is closed; there is no in-flight month, decision 031), **Meta, Google, TikTok**.
 
 1. Clients — industry, billing model (markup 10–20% / management fee / client-owned), 2–3 platforms each.
 2. Media plans / IOs — budget, dates, campaign codes per client/month/platform; one Excel file per client.
@@ -173,7 +173,7 @@ Each step is a plain Python function runnable via `make pipeline`; Airflow only 
 4. Load Excel plans → `core.insertion_orders`; link `core.campaigns.io_id` (decision 029)
 5. Load invoices (stage 1: ground-truth JSON; stage 2: LLM extraction)
 6. Reconcile → `core.reconciliation_results` + `app.issues` (task 1.10 must run quality, step 3, before this step: reconciliation updates the issues quality wrote, decision 030)
-7. Pacing
+7. Pacing → `app.issues` as `app`, after reconcile: it can take over quality's zero-spend issues (decision 031)
 8. Record run → `app.pipeline_runs`
 
 Idempotency test: running the pipeline twice yields identical row counts.
@@ -190,10 +190,13 @@ Per client × platform × month:
 Issue explanations in stage 1 come from templates (no LLM). Thresholds live in `backend/app/reconciliation/config.py`.
 
 ## 9. Pacing
-- Daily plan = monthly budget × day weights.
+Per insertion order, over its own dates, as of an explicit date (default: the last delivered date, never the clock). Rules in `backend/app/reconciliation/pacing.py`, thresholds and weights in its `config.py` (decision 031).
+- Daily plan = IO budget × weekday weights.
 - Compare cumulative actual vs cumulative plan daily.
-- Forecast = actual to date + (last-7-day average × remaining days).
-- Status (configurable): green 98–115% of budget; yellow 85–98% or 115–125%; red otherwise.
+- Forecast = actual to date + (average of the reported days among the last 7 × remaining days).
+- Status (configurable): green 98–115% of budget; yellow 85–98% or 115–125%; red otherwise. Each bound belongs to the milder status.
+- Issues only from day 7 of the flight. Running flight: red or yellow now, or red on any earlier day. Closed flight: only a red day, and only when the final total is inside rule 2's band (the total itself is rule 2's).
+- A pacing issue takes over the quality zero-spend issue of the same order unless pacing already has its own.
 
 ## 10. Security (summary — full threat model in `docs/threat-model.md` from stage 2)
 Framework: OWASP Top 10 for LLM Applications.
