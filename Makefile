@@ -33,8 +33,8 @@ generate: ## Generate synthetic data with planted errors into data/generated/
 mock-apis: ## Serve mock Meta/Google/TikTok APIs on MOCK_PLATFORMS_PORT
 	uv run python -m mock_platforms
 
-pipeline: ## Run the nightly pipeline without Airflow (stage 1)
-	@echo "not yet implemented (stage 1)"
+pipeline: ## Run the nightly pipeline once (needs `make mock-apis` running)
+	PYTHONPATH=backend uv run python -m pipelines.run
 
 eval: ## Run evals (stage 2)
 	@echo "not yet implemented (stage 2)"

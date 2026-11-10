@@ -164,7 +164,7 @@ Financial FKs use `ON DELETE RESTRICT`. Conventions: decisions 012–014.
 | `eval_runner` | read everything incl. `eval` |
 
 ## 7. Pipeline (stage 1)
-Each step is a plain Python function runnable via `make pipeline`; Airflow only orchestrates them.
+Each step is a plain Python function; `pipelines/run.py` (`make pipeline`) runs them in this order with one `run_id`, and Airflow only orchestrates them. `make pipeline` expects the platform APIs to be running (`make mock-apis`) (decision 032).
 
 0. Load reference data (clients, platforms, ad accounts) → `core` (decision 028)
 1. Ingest each platform → `raw` (retries with backoff; failures recorded, other platforms continue)
@@ -172,9 +172,11 @@ Each step is a plain Python function runnable via `make pipeline`; Airflow only 
 3. Quality checks
 4. Load Excel plans → `core.insertion_orders`; link `core.campaigns.io_id` (decision 029)
 5. Load invoices (stage 1: ground-truth JSON; stage 2: LLM extraction)
-6. Reconcile → `core.reconciliation_results` + `app.issues` (task 1.10 must run quality, step 3, before this step: reconciliation updates the issues quality wrote, decision 030)
+6. Reconcile → `core.reconciliation_results` + `app.issues`, after quality (step 3): reconciliation updates the issues quality wrote (decision 030)
 7. Pacing → `app.issues` as `app`, after reconcile: it can take over quality's zero-spend issues (decision 031)
-8. Record run → `app.pipeline_runs`
+8. Record run → `app.pipeline_runs` as `app`: status, start/finish time, and per-step duration and counts in `details`
+
+The first step that raises stops the run, which is recorded as `failed` with the error (exit 1); so does ingest when no platform API answers. Account failures and rejected documents let the run finish as `partial` (exit 2); `succeeded` exits 0. These are the module's codes; `make pipeline` reports any non-zero code as make's own 2.
 
 Idempotency test: running the pipeline twice yields identical row counts.
 
