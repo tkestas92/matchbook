@@ -172,7 +172,7 @@ Each step is a plain Python function runnable via `make pipeline`; Airflow only 
 3. Quality checks
 4. Load Excel plans → `core.insertion_orders`; link `core.campaigns.io_id` (decision 029)
 5. Load invoices (stage 1: ground-truth JSON; stage 2: LLM extraction)
-6. Reconcile → `core.reconciliation_results` + `app.issues`
+6. Reconcile → `core.reconciliation_results` + `app.issues` (task 1.10 must run quality, step 3, before this step: reconciliation updates the issues quality wrote, decision 030)
 7. Pacing
 8. Record run → `app.pipeline_runs`
 
@@ -181,13 +181,13 @@ Idempotency test: running the pipeline twice yields identical row counts.
 ## 8. Reconciliation rules (stage 1)
 Per client × platform × month:
 1. Link invoice lines to campaigns by code; unlinked lines → issue "needs matching".
-2. Compute delivered spend in both platform timezone and agency timezone.
-3. Invoice vs delivered: variance > €1 **and** > 0.5% → issue. If the timezone difference explains it → classify as "timezone shift", not "overcharge".
+2. Delivered spend is the sum of the daily rows in the ad account's local dates. Daily rows cannot be re-bucketed, so delivery in the agency timezone is not computed (decision 030).
+3. Invoice vs delivered: variance > €1 **and** > 0.5% → issue. A whole day dated across a month end that matches the variance is classified as "timezone shift" when the account timezone differs from the agency's and as "month boundary shift" when it does not; neither is an "overcharge". A variance that missing delivery days can account for goes on the existing quality issue.
 4. Delivered vs IO budget: overspend or large underspend.
 5. Client invoice vs expected amount from billing model (wrong markup, credit not applied).
-6. Duplicates: same vendor, amount and period with a different number.
+6. Duplicates: same vendor, amount and period with a different number. Computed before step 3, so a copy is never also a variance.
 
-Issue explanations in stage 1 come from templates (no LLM).
+Issue explanations in stage 1 come from templates (no LLM). Thresholds live in `backend/app/reconciliation/config.py`.
 
 ## 9. Pacing
 - Daily plan = monthly budget × day weights.
