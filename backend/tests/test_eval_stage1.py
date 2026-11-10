@@ -361,7 +361,8 @@ def test_loader_main_reports_a_missing_file_without_touching_the_db(tmp_path: Pa
     assert loader.main(["--path", str(tmp_path / "absent.json")]) == 2
 
 
-def test_eval_runner_url_requires_its_password() -> None:
+def test_eval_runner_url_requires_its_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("EVAL_RUNNER_DB_PASSWORD", raising=False)
     settings = Settings(_env_file=None, database_url="postgresql+psycopg://u:p@localhost/db")
     with pytest.raises(MissingRolePasswordError, match="EVAL_RUNNER_DB_PASSWORD"):
         eval_runner_database_url(settings)
