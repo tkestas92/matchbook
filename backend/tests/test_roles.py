@@ -412,5 +412,25 @@ def test_eval_runner_reads_everything(as_role: Callable[[str], Connection]) -> N
     assert conn.execute(text("SELECT count(*) FROM eval.answer_key")).scalar_one() == 1
 
 
-def test_eval_runner_cannot_write(as_role: Callable[[str], Connection]) -> None:
-    assert_denied(as_role("eval_runner"), "DELETE FROM eval.answer_key")
+@pytest.mark.parametrize("role", ["app", "etl"])
+def test_role_cannot_write_eval(as_role: Callable[[str], Connection], role: str) -> None:
+    assert_denied(
+        as_role(role),
+        "INSERT INTO eval.answer_key (error_type, entity_ref, period_start, period_end, "
+        "expected_detector) VALUES ('x', 'x', '2026-10-01', '2026-10-31', 'x')",
+    )
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "DELETE FROM eval.answer_key",
+        "UPDATE eval.answer_key SET magnitude = 0",
+        (
+            "INSERT INTO eval.answer_key (error_type, entity_ref, period_start, period_end, "
+            "expected_detector) VALUES ('x', 'x', '2026-10-01', '2026-10-31', 'x')"
+        ),
+    ],
+)
+def test_eval_runner_cannot_write(as_role: Callable[[str], Connection], sql: str) -> None:
+    assert_denied(as_role("eval_runner"), sql)

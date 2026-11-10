@@ -149,7 +149,7 @@ Defined in `backend/app/db/models/`, created by `backend/migrations/`.
 | `app.issues` | id, dedup_key (unique), type, severity, client_id, platform_id, period, entity_type, entity_id, amount, explanation, proposed_action, status, decided_by, decided_at, decision_note |
 | `app.audit_log` | id, actor, action, entity, entity_id, payload (insert-only, enforced by trigger) |
 | `app.pipeline_runs` | id (UUID), started_at, finished_at, status, cost_eur, tokens, details |
-| `eval.answer_key` | id, error_type, entity_ref, period_start, period_end, magnitude, expected_detector, details — no FKs |
+| `eval.answer_key` | id, error_type, entity_ref, period_start, period_end, magnitude, expected_detector, details (client, platform, error no., stage, seed; decision 033) — no FKs; written only by the owner-run `make eval-load-key` |
 
 All tables: `created_at`. Pipeline-upserted tables: `updated_at` (trigger). Pipeline-written tables: `run_id` (UUID, no FK).
 Money: `NUMERIC(12,2)`, EUR (exception: `cost_eur` is `NUMERIC(12,6)`, decision 014). Timestamps: `timestamptz`, UTC.
@@ -179,6 +179,8 @@ Each step is a plain Python function; `pipelines/run.py` (`make pipeline`) runs 
 The first step that raises stops the run, which is recorded as `failed` with the error (exit 1); so does ingest when no platform API answers. Account failures and rejected documents let the run finish as `partial` (exit 2); `succeeded` exits 0. These are the module's codes; `make pipeline` reports any non-zero code as make's own 2.
 
 Idempotency test: running the pipeline twice yields identical row counts.
+
+Stage-1 eval (decision 033): `make generate` → `make eval-load-key` (owner) → `make pipeline` → `make eval-stage1`, which compares the latest run's open issues with `eval.answer_key` as `eval_runner`, writes `docs/eval-results.md` and exits non-zero on any missed rule-detectable error or more false alarms than allowed (default 0).
 
 ## 8. Reconciliation rules (stage 1)
 Per client × platform × month:
@@ -217,7 +219,7 @@ Framework: OWASP Top 10 for LLM Applications.
 | Stage | Scope | Done when |
 |---|---|---|
 | 0 | Repo, Docker Postgres, Alembic schemas/tables, DB roles + RLS skeleton, lint/test, minimal CI, Kaggle distributions | `make up && make migrate && make test` green; test proves `agent_ro` cannot write or read `eval` |
-| 1 | Generator + answer key, mock APIs, ingest/normalize/quality, reconciliation rules, pacing, integration eval, Airflow wrapper | Pipeline finds 100% of rule-detectable planted errors with ~no false alarms |
+| 1 | Generator + answer key, mock APIs, ingest/normalize/quality, reconciliation rules, pacing, integration eval, Airflow wrapper | `make eval-stage1` exits 0: 100% of rule-detectable planted errors found, false alarms within the limit (default 0) |
 | 2 | LLM invoice extraction with confidence, PII masking, AI name matching, eval runner, malicious invoices, Langfuse | Extraction accuracy reported; all malicious invoices rejected; error #3 now detected |
 | 3 | Agent with tools, SQL guards, authenticated MCP server, SQL eval set | Correct answers from Claude Desktop via MCP |
 | 4 | Anomalies, Excel report + checked summary, approval queue + audit, notifications, Next.js UI | Morning email → approve/reject issues in UI |
