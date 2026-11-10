@@ -64,9 +64,18 @@ def insert_returning(conn: Connection, statement: str, **values: Any) -> int:
     return conn.execute(text(statement), values).scalar_one()
 
 
-def seed_world(db: PipelineDb, days: list[tuple[date, str]], invoice_lines: list[str]) -> None:
-    """One client, account, order and campaign, its delivery and one platform invoice."""
+def seed_world(
+    db: PipelineDb,
+    days: list[tuple[date, str]],
+    invoice_lines: list[str],
+    budget: str | None = None,
+) -> None:
+    """One client, account, order and campaign, its delivery and one platform invoice.
+
+    The order's budget defaults to June's delivered spend, so rule 2 stays quiet.
+    """
     run_id = uuid.uuid4()
+    june_spend = sum((Decimal(spend) for day, spend in days if day.month == 6), Decimal(0))
     with db.owner.begin() as conn:
         client = insert_returning(
             conn,
@@ -91,10 +100,11 @@ def seed_world(db: PipelineDb, days: list[tuple[date, str]], invoice_lines: list
             conn,
             "INSERT INTO core.insertion_orders "
             "(client_id, platform_id, campaign_ref, start_date, end_date, budget, run_id) "
-            "VALUES (:c, :p, :ref, '2026-06-01', '2026-06-30', 1000, :r) RETURNING id",
+            "VALUES (:c, :p, :ref, '2026-06-01', '2026-06-30', :b, :r) RETURNING id",
             c=client,
             p=platform,
             ref=REF,
+            b=Decimal(budget) if budget is not None else june_spend,
             r=run_id,
         )
         campaign = insert_returning(
@@ -138,6 +148,40 @@ def seed_world(db: PipelineDb, days: list[tuple[date, str]], invoice_lines: list
             )
 
 
+def add_client_invoice(db: PipelineDb, lines: list[tuple[str | None, str]]) -> None:
+    """The agency's June invoice to AAA; a line without a code is the fee."""
+    with db.owner.begin() as conn:
+        invoice = insert_returning(
+            conn,
+            "INSERT INTO core.invoices (kind, vendor, number, client_id, issue_date, "
+            "period_start, period_end, subtotal, vat, total, run_id) "
+            "SELECT 'client', 'Agency', 'AG-1', id, '2026-07-10', '2026-06-01', '2026-06-30', "
+            "0, 0, 0, gen_random_uuid() FROM core.clients RETURNING id",
+        )
+        for line_no, (ref, amount) in enumerate(lines, start=1):
+            conn.execute(
+                text(
+                    "INSERT INTO core.invoice_lines "
+                    "(invoice_id, line_no, campaign_ref, amount, run_id) "
+                    "VALUES (:i, :n, :ref, :a, gen_random_uuid())"
+                ),
+                {"i": invoice, "n": line_no, "ref": ref, "a": Decimal(amount)},
+            )
+
+
+def add_credit_note(db: PipelineDb, amount: str) -> None:
+    with db.owner.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO core.credit_notes "
+                "(original_invoice_id, vendor, number, amount, run_id) "
+                "SELECT id, 'Meta', 'CN-1', :a, gen_random_uuid() FROM core.invoices "
+                "WHERE number = 'INV-1'"
+            ),
+            {"a": Decimal(amount)},
+        )
+
+
 def june_days(*spends: str) -> list[tuple[date, str]]:
     return [(JUNE + timedelta(days=offset), spend) for offset, spend in enumerate(spends)]
 
@@ -176,7 +220,7 @@ def test_results_and_issues_are_written(pipeline_db: PipelineDb) -> None:
         Decimal("10.00"),
     )
     assert (row["status"], row["run_id"]) == ("issue", run_id)
-    assert row["planned"] is None
+    assert row["planned"] == Decimal("100.00")
     issue = issues(pipeline_db)[0]
     assert (issue["type"], issue["amount"]) == (templates.OVERCHARGE, Decimal("10.00"))
     assert (issue["status"], issue["period"]) == ("open", JUNE)
@@ -206,18 +250,56 @@ def test_a_link_is_not_cleared_when_the_code_stops_matching(pipeline_db: Pipelin
 
 def test_a_credit_note_does_not_change_invoice_vs_delivered(pipeline_db: PipelineDb) -> None:
     seed_world(pipeline_db, june_days("100.00"), ["100.00"])
-    with pipeline_db.owner.begin() as conn:
-        conn.execute(
-            text(
-                "INSERT INTO core.credit_notes "
-                "(original_invoice_id, vendor, number, amount, run_id) "
-                "SELECT id, 'Meta', 'CN-1', 20, gen_random_uuid() FROM core.invoices"
-            )
-        )
+    add_credit_note(pipeline_db, "20.00")
+    add_client_invoice(pipeline_db, [(REF, "100.00"), (REF, "-20.00"), (None, "12.00")])
     run(pipeline_db)
     row = results(pipeline_db)[0]
     assert (row["invoiced"], row["status"]) == (Decimal("100.00"), "ok")
+    assert row["client_invoiced"] == row["expected_client_amount"] == Decimal("92.00")
     assert issues(pipeline_db) == []
+
+
+def test_budget_and_client_invoice_columns_are_written(pipeline_db: PipelineDb) -> None:
+    seed_world(pipeline_db, june_days("100.00"), ["100.00"], budget="200.00")
+    add_credit_note(pipeline_db, "20.00")
+    add_client_invoice(pipeline_db, [(REF, "100.00"), (None, "15.00")])
+    run(pipeline_db)
+    row = results(pipeline_db)[0]
+    assert (row["planned"], row["status"]) == (Decimal("200.00"), "issue")
+    assert (row["client_invoiced"], row["expected_client_amount"]) == (
+        Decimal("115.00"),
+        Decimal("92.00"),
+    )
+    by_type = {issue["type"]: issue for issue in issues(pipeline_db)}
+    assert set(by_type) == {templates.BUDGET_UNDERSPEND, templates.CREDIT_NOT_APPLIED}
+    assert by_type[templates.CREDIT_NOT_APPLIED]["amount"] == Decimal("20.00")
+    assert by_type[templates.CREDIT_NOT_APPLIED]["platform_id"] is not None
+
+
+def test_a_wrong_markup_issue_has_no_platform(pipeline_db: PipelineDb) -> None:
+    seed_world(pipeline_db, june_days("100.00"), ["100.00"])
+    add_client_invoice(pipeline_db, [(REF, "100.00"), (None, "20.00")])
+    run(pipeline_db)
+    issue = issues(pipeline_db)[0]
+    assert (issue["type"], issue["amount"]) == (templates.WRONG_MARKUP, Decimal("5.00"))
+    assert (issue["platform_id"], issue["period"]) == (None, JUNE)
+    assert results(pipeline_db)[0]["status"] == "issue"
+
+
+def test_re_runs_keep_1_8b_issues_unique_and_their_decisions(pipeline_db: PipelineDb) -> None:
+    seed_world(pipeline_db, june_days("100.00"), ["100.00"], budget="200.00")
+    add_client_invoice(pipeline_db, [(REF, "100.00"), (None, "20.00")])
+    run(pipeline_db)
+    first_results, first_issues = results(pipeline_db), issues(pipeline_db)
+    assert len(first_issues) == 2
+    with pipeline_db.owner.begin() as conn:
+        conn.execute(text("UPDATE app.issues SET status = 'approved', decision_note = 'ok'"))
+    run(pipeline_db)
+    run(pipeline_db)
+    again = issues(pipeline_db)
+    assert [row["id"] for row in again] == [row["id"] for row in first_issues]
+    assert {(row["status"], row["decision_note"]) for row in again} == {("approved", "ok")}
+    assert [row["id"] for row in results(pipeline_db)] == [row["id"] for row in first_results]
 
 
 def test_running_twice_changes_no_row_counts(pipeline_db: PipelineDb) -> None:

@@ -183,8 +183,8 @@ Per client × platform × month:
 1. Link invoice lines to campaigns by code; unlinked lines → issue "needs matching".
 2. Delivered spend is the sum of the daily rows in the ad account's local dates. Daily rows cannot be re-bucketed, so delivery in the agency timezone is not computed (decision 030).
 3. Invoice vs delivered: variance > €1 **and** > 0.5% → issue. A whole day dated across a month end that matches the variance is classified as "timezone shift" when the account timezone differs from the agency's and as "month boundary shift" when it does not; neither is an "overcharge". A variance that missing delivery days can account for goes on the existing quality issue.
-4. Delivered vs IO budget: overspend or large underspend.
-5. Client invoice vs expected amount from billing model (wrong markup, credit not applied).
+4. Delivered vs IO budget: delivered strictly below 85% or above 115% of the month's IO budget → overspend / underspend issue. Orders spanning months are not prorated (decision 030).
+5. Client invoice vs expected amount from billing model, above €1: wrong markup / fee (client-level, on the invoice's own media net of the credits it applies) and credit not applied (per platform, against the stored credit notes). Client-owned clients get rule 4 only. `client_invoiced` and `expected_client_amount` are split over platforms by a convention (decision 030).
 6. Duplicates: same vendor, amount and period with a different number. Computed before step 3, so a copy is never also a variance.
 
 Issue explanations in stage 1 come from templates (no LLM). Thresholds live in `backend/app/reconciliation/config.py`.
