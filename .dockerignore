@@ -1,0 +1,4 @@
+# The Airflow image needs only the lock files; code is mounted. Keeps .env and data/ out.
+*
+!pyproject.toml
+!uv.lock

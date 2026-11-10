@@ -180,6 +180,8 @@ The first step that raises stops the run, which is recorded as `failed` with the
 
 Idempotency test: running the pipeline twice yields identical row counts.
 
+Airflow (decision 034, `make airflow-up`, compose profile `airflow`, not part of `make up`): the DAG `matchbook_nightly` runs nightly at 03:00 in the agency timezone and only calls the same step functions from its own image's isolated project venv. Tasks are `start` → reference → ingest → normalize+quality (one task: quality needs normalize's in-memory result) → load_plans → load_invoices → reconcile → pacing → `record` → `outcome`. `record` always runs and writes `app.pipeline_runs`; a failed run fails the DAG run, and a partial run shows as a skipped `outcome`.
+
 Stage-1 eval (decision 033): `make generate` → `make eval-load-key` (owner) → `make pipeline` → `make eval-stage1`, which compares the latest run's open issues with `eval.answer_key` as `eval_runner`, writes `docs/eval-results.md` and exits non-zero on any missed rule-detectable error or more false alarms than allowed (default 0).
 
 ## 8. Reconciliation rules (stage 1)
@@ -219,7 +221,7 @@ Framework: OWASP Top 10 for LLM Applications.
 | Stage | Scope | Done when |
 |---|---|---|
 | 0 | Repo, Docker Postgres, Alembic schemas/tables, DB roles + RLS skeleton, lint/test, minimal CI, Kaggle distributions | `make up && make migrate && make test` green; test proves `agent_ro` cannot write or read `eval` |
-| 1 | Generator + answer key, mock APIs, ingest/normalize/quality, reconciliation rules, pacing, integration eval, Airflow wrapper | `make eval-stage1` exits 0: 100% of rule-detectable planted errors found, false alarms within the limit (default 0) |
+| 1 | Generator + answer key, mock APIs, ingest/normalize/quality, reconciliation rules, pacing, integration eval, Airflow wrapper (optional `airflow` compose profile, decision 034) | `make eval-stage1` exits 0: 100% of rule-detectable planted errors found, false alarms within the limit (default 0) |
 | 2 | LLM invoice extraction with confidence, PII masking, AI name matching, eval runner, malicious invoices, Langfuse | Extraction accuracy reported; all malicious invoices rejected; error #3 now detected |
 | 3 | Agent with tools, SQL guards, authenticated MCP server, SQL eval set | Correct answers from Claude Desktop via MCP |
 | 4 | Anomalies, Excel report + checked summary, approval queue + audit, notifications, Next.js UI | Morning email → approve/reject issues in UI |
