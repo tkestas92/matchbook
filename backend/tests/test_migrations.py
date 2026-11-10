@@ -299,6 +299,47 @@ def test_downgrade_then_upgrade_round_trips(database_url: str) -> None:
             engine.dispose()
 
 
+DEMO_VIEWS = {"v_issues", "v_pipeline_runs"}
+
+
+def demo_state(engine: Engine) -> tuple[set[str], list[str]]:
+    """Views in schema `demo` and the `demo_ro` settings in this database."""
+    inspector = inspect(engine)
+    views = (
+        set(inspector.get_view_names(schema="demo"))
+        if "demo" in inspector.get_schema_names()
+        else set()
+    )
+    with engine.connect() as conn:
+        settings = conn.execute(
+            text(
+                "SELECT unnest(s.setconfig) FROM pg_db_role_setting s "
+                "JOIN pg_roles r ON r.oid = s.setrole "
+                "JOIN pg_database d ON d.oid = s.setdatabase "
+                "WHERE r.rolname = 'demo_ro' AND d.datname = current_database()"
+            )
+        ).scalars()
+        return views, sorted(settings)
+
+
+def test_demo_migration_downgrades_and_upgrades_again(database_url: str) -> None:
+    expected_settings = ["default_transaction_read_only=on", "statement_timeout=3s"]
+    with temporary_database(database_url) as url:
+        config = alembic_config(url)
+        engine = create_engine(url)
+        try:
+            command.upgrade(config, "head")
+            assert demo_state(engine) == (DEMO_VIEWS, expected_settings)
+            command.downgrade(config, "0004")
+            assert "demo" not in inspect(engine).get_schema_names()
+            assert demo_state(engine) == (set(), [])
+            assert existing_tables(engine) == EXPECTED_TABLES
+            command.upgrade(config, "head")
+            assert demo_state(engine) == (DEMO_VIEWS, expected_settings)
+        finally:
+            engine.dispose()
+
+
 def insert_client_without_code(engine: Engine, name: str) -> None:
     with engine.begin() as conn:
         conn.execute(

@@ -124,6 +124,7 @@ All: bearer token required; occasional `429` (must back off and retry) and `500`
 | `core` | Normalized clients, platforms, IOs, campaigns, daily delivery, invoices | App; agent via views only |
 | `app` | Users/roles, issues (approval queue), audit log, pipeline runs | App |
 | `eval` | `answer_key` | Evals only |
+| `demo` | Two curated read-only views for the public demo: open issues, pipeline run status (decision 035) | Demo API (`demo_ro`) only |
 
 `eval` is isolated so that no module can "find" errors by reading the answers.
 
@@ -162,6 +163,7 @@ Financial FKs use `ON DELETE RESTRICT`. Conventions: decisions 012–014.
 | `app` | read `core`, write `app` |
 | `agent_ro` | read-only on curated `core` views, with RLS |
 | `eval_runner` | read everything incl. `eval` |
+| `demo_ro` | SELECT on `demo.v_issues` and `demo.v_pipeline_runs` only; read-only sessions, 3 s statement timeout (decision 035) |
 
 ## 7. Pipeline (stage 1)
 Each step is a plain Python function; `pipelines/run.py` (`make pipeline`) runs them in this order with one `run_id`, and Airflow only orchestrates them. `make pipeline` expects the platform APIs to be running (`make mock-apis`) (decision 032).
@@ -183,6 +185,8 @@ Idempotency test: running the pipeline twice yields identical row counts.
 Airflow (decision 034, `make airflow-up`, compose profile `airflow`, not part of `make up`): the DAG `matchbook_nightly` runs nightly at 03:00 in the agency timezone and only calls the same step functions from its own image's isolated project venv. Tasks are `start` → reference → ingest → normalize+quality (one task: quality needs normalize's in-memory result) → load_plans → load_invoices → reconcile → pacing → `record` → `outcome`. `record` always runs and writes `app.pipeline_runs`; a failed run fails the DAG run, and a partial run shows as a skipped `outcome`.
 
 Stage-1 eval (decision 033): `make generate` → `make eval-load-key` (owner) → `make pipeline` → `make eval-stage1`, which compares the latest run's open issues with `eval.answer_key` as `eval_runner`, writes `docs/eval-results.md` and exits non-zero on any missed rule-detectable error or more false alarms than allowed (default 0).
+
+Demo API (decision 035, `make demo-api`, 127.0.0.1): a separate read-only FastAPI app (`backend/app/demo/`) for the public stage-1 demo. GET only, as `demo_ro`: latest run status, open issues (summary and paginated list) and the counts-only stage-1 results from `docs/eval-results.md`. Deployment (compose profile `demo`, tunnel) is task 1.13b.
 
 ## 8. Reconciliation rules (stage 1)
 Per client × platform × month:
@@ -221,7 +225,7 @@ Framework: OWASP Top 10 for LLM Applications.
 | Stage | Scope | Done when |
 |---|---|---|
 | 0 | Repo, Docker Postgres, Alembic schemas/tables, DB roles + RLS skeleton, lint/test, minimal CI, Kaggle distributions | `make up && make migrate && make test` green; test proves `agent_ro` cannot write or read `eval` |
-| 1 | Generator + answer key, mock APIs, ingest/normalize/quality, reconciliation rules, pacing, integration eval, Airflow wrapper (optional `airflow` compose profile, decision 034) | `make eval-stage1` exits 0: 100% of rule-detectable planted errors found, false alarms within the limit (default 0) |
+| 1 | Generator + answer key, mock APIs, ingest/normalize/quality, reconciliation rules, pacing, integration eval, Airflow wrapper (optional `airflow` compose profile, decision 034), read-only public demo API (decision 035) | `make eval-stage1` exits 0: 100% of rule-detectable planted errors found, false alarms within the limit (default 0) |
 | 2 | LLM invoice extraction with confidence, PII masking, AI name matching, eval runner, malicious invoices, Langfuse | Extraction accuracy reported; all malicious invoices rejected; error #3 now detected |
 | 3 | Agent with tools, SQL guards, authenticated MCP server, SQL eval set | Correct answers from Claude Desktop via MCP |
 | 4 | Anomalies, Excel report + checked summary, approval queue + audit, notifications, Next.js UI | Morning email → approve/reject issues in UI |

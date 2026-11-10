@@ -32,6 +32,7 @@ jobs:
       APP_DB_PASSWORD: ci-app
       AGENT_RO_DB_PASSWORD: ci-agent-ro
       EVAL_RUNNER_DB_PASSWORD: ci-eval-runner
+      DEMO_RO_DB_PASSWORD: ci-demo-ro
 
     steps:
       - uses: actions/checkout@v4

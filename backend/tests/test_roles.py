@@ -232,12 +232,15 @@ def test_ensure_roles_is_idempotent_and_roles_are_unprivileged(db: Db) -> None:
         assert not row.rolcreatedb
 
 
-def test_role_passwords_require_every_password(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("missing", LOGIN_ROLES)
+def test_role_passwords_require_every_password(
+    monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@localhost/db")
     for role in LOGIN_ROLES:
         monkeypatch.setenv(f"{role.upper()}_DB_PASSWORD", "x")
-    monkeypatch.delenv("AGENT_RO_DB_PASSWORD")
-    with pytest.raises(MissingRolePasswordError, match="AGENT_RO_DB_PASSWORD"):
+    monkeypatch.delenv(f"{missing.upper()}_DB_PASSWORD")
+    with pytest.raises(MissingRolePasswordError, match=f"{missing.upper()}_DB_PASSWORD"):
         role_passwords(Settings(_env_file=None))
 
 
@@ -434,3 +437,101 @@ def test_role_cannot_write_eval(as_role: Callable[[str], Connection], role: str)
 )
 def test_eval_runner_cannot_write(as_role: Callable[[str], Connection], sql: str) -> None:
     assert_denied(as_role("eval_runner"), sql)
+
+
+# --- demo_ro: two demo views, nothing else, read-only (decision 035) ------------------
+
+DEMO_VIEWS = ("demo.v_issues", "demo.v_pipeline_runs")
+DEMO_VIEW_SOURCES = ("app.issues", "app.pipeline_runs", "core.clients", "core.platforms")
+# A read-only transaction rejects writes before grants are checked, and a join view is rejected
+# before both; any of these refusals is fine.
+DEMO_WRITE_DENIED = (
+    "permission denied|read-only transaction|cannot (insert into|update|delete from) view"
+)
+
+
+@pytest.mark.parametrize("view", DEMO_VIEWS)
+def test_demo_ro_reads_the_demo_views(as_role: Callable[[str], Connection], view: str) -> None:
+    as_role("demo_ro").execute(text(f"SELECT * FROM {view}"))
+
+
+def test_demo_views_see_every_client_despite_rls(
+    db: Db, as_role: Callable[[str], Connection]
+) -> None:
+    """Owner-rights views: RLS on app.issues/core.clients does not hide demo rows."""
+    codes = set(as_role("demo_ro").execute(text("SELECT client_code FROM demo.v_issues")).scalars())
+    assert len(codes) >= 2
+
+
+def test_demo_view_sources_do_not_force_row_security(as_role: Callable[[str], Connection]) -> None:
+    forced = as_role("eval_runner").execute(
+        text(
+            "SELECT relname FROM pg_class "
+            "WHERE oid = ANY(CAST(:tables AS regclass[])) AND relforcerowsecurity"
+        ),
+        {"tables": list(DEMO_VIEW_SOURCES)},
+    )
+    assert forced.scalars().all() == []
+
+
+@pytest.mark.parametrize(
+    "relation",
+    sorted(EXPECTED_TABLES) + [f"core.{view}" for view in AGENT_VIEWS],
+)
+def test_demo_ro_cannot_read_other_relations(
+    as_role: Callable[[str], Connection], relation: str
+) -> None:
+    assert_denied(as_role("demo_ro"), f"SELECT 1 FROM {relation} LIMIT 1")
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "INSERT INTO demo.v_issues (type) VALUES ('x')",
+        "UPDATE demo.v_issues SET explanation = 'x'",
+        "DELETE FROM demo.v_issues",
+        "DELETE FROM demo.v_pipeline_runs",
+        "DELETE FROM app.issues",
+        "UPDATE app.pipeline_runs SET status = 'failed'",
+        "UPDATE core.clients SET industry = 'x'",
+        "DELETE FROM raw.meta_responses",
+        "DELETE FROM eval.answer_key",
+        "CREATE TABLE demo.demo_table (id int)",
+        "CREATE TABLE public.demo_table (id int)",
+        "CREATE TEMP TABLE demo_temp (id int)",
+        "CREATE SCHEMA demo_schema",
+        "CREATE VIEW demo.v_other AS SELECT 1",
+    ],
+)
+def test_demo_ro_cannot_write(as_role: Callable[[str], Connection], sql: str) -> None:
+    assert_denied(as_role("demo_ro"), sql, match=DEMO_WRITE_DENIED)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "DELETE FROM demo.v_issues",
+        "DELETE FROM app.issues",
+        "UPDATE app.pipeline_runs SET status = 'failed'",
+        "CREATE TABLE demo.demo_table (id int)",
+        "CREATE TEMP TABLE demo_temp (id int)",
+    ],
+)
+def test_demo_ro_cannot_write_in_a_read_write_transaction(
+    as_role: Callable[[str], Connection], sql: str
+) -> None:
+    """Grants hold on their own: switching the session to read-write gains nothing."""
+    conn = as_role("demo_ro")
+    conn.execute(text("SET TRANSACTION READ WRITE"))
+    assert_denied(conn, sql, match="permission denied|cannot delete from view")
+
+
+def test_demo_ro_session_is_read_only(as_role: Callable[[str], Connection]) -> None:
+    conn = as_role("demo_ro")
+    assert conn.execute(text("SHOW default_transaction_read_only")).scalar_one() == "on"
+    assert conn.execute(text("SHOW transaction_read_only")).scalar_one() == "on"
+
+
+def test_demo_ro_has_statement_timeout(as_role: Callable[[str], Connection]) -> None:
+    timeout = as_role("demo_ro").execute(text("SHOW statement_timeout")).scalar_one()
+    assert timeout == "3s"

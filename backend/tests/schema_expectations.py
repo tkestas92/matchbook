@@ -1,6 +1,7 @@
 """The schema contract shared by the model and migration tests."""
 
-EXPECTED_SCHEMAS = {"raw", "core", "app", "eval"}
+# `demo` holds only the read-only demo views (migration 0005, decision 035).
+EXPECTED_SCHEMAS = {"raw", "core", "app", "eval", "demo"}
 
 EXPECTED_TABLES = {
     "raw.meta_responses",
