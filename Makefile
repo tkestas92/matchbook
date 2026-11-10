@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help up down roles migrate test lint format generate mock-apis pipeline eval eval-load-key eval-stage1 \
-	airflow-up airflow-down airflow-password airflow-check
+	airflow-up airflow-down airflow-password airflow-check demo-api
 
 help: ## List available targets
 	@grep -E '^[a-z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -63,3 +63,8 @@ airflow-password: ## Print the generated Airflow UI password for user `admin`
 
 airflow-check: ## Optional: DAG import errors in the running Airflow (needs airflow-up; not in CI)
 	docker compose --profile airflow exec airflow airflow dags list-import-errors
+
+DEMO_API_PORT ?= 8200
+
+demo-api: ## Serve the read-only demo API on 127.0.0.1:DEMO_API_PORT (logs in as demo_ro)
+	PYTHONPATH=backend uv run uvicorn app.demo.app:create_demo_app --factory --app-dir backend --host 127.0.0.1 --port $(DEMO_API_PORT)

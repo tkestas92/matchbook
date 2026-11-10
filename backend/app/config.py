@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     app_db_password: SecretStr | None = None
     agent_ro_db_password: SecretStr | None = None
     eval_runner_db_password: SecretStr | None = None
+    demo_ro_db_password: SecretStr | None = None
 
 
 @lru_cache

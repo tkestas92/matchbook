@@ -9,7 +9,7 @@ import sys
 from app.config import Settings, get_settings
 from sqlalchemy import Connection, create_engine, text
 
-LOGIN_ROLES = ("etl", "app", "agent_ro", "eval_runner")
+LOGIN_ROLES = ("etl", "app", "agent_ro", "eval_runner", "demo_ro")
 
 ROLE_ATTRIBUTES = "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT"
 
