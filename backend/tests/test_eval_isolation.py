@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-GUARDED_DIRS = ("pipelines", "backend/app", "mock_platforms")
+GUARDED_DIRS = ("pipelines", "backend/app", "mock_platforms", "orchestration")
 
 # The ORM definition of eval.answer_key: Alembic needs it on Base.metadata. Nothing else.
 ALLOWED = {
@@ -37,7 +37,7 @@ def guarded_sources() -> list[Path]:
 
 def test_guarded_directories_have_sources() -> None:
     names = {path.relative_to(ROOT).parts[0] for path in guarded_sources()}
-    assert names == {"pipelines", "backend", "mock_platforms"}
+    assert names == {"pipelines", "backend", "mock_platforms", "orchestration"}
 
 
 @pytest.mark.parametrize("path", guarded_sources(), ids=lambda p: p.relative_to(ROOT).as_posix())

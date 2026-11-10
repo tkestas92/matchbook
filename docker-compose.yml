@@ -16,5 +16,114 @@ services:
       retries: 5
       start_period: 10s
 
+  # --- Airflow (`make airflow-up`; not part of `make up`, decision 034) ---
+
+  airflow-postgres:
+    profiles: ["airflow"]
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:-}
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  airflow-mock-apis:
+    profiles: ["airflow"]
+    image: matchbook-airflow:local
+    build:
+      context: .
+      dockerfile: orchestration/Dockerfile
+    entrypoint: ["/opt/matchbook-venv/bin/python", "-m", "orchestration.mock_apis_server"]
+    working_dir: /opt/matchbook
+    environment:
+      MOCK_PLATFORMS_TOKEN: ${MOCK_PLATFORMS_TOKEN:-}
+      MOCK_PLATFORMS_PORT: ${MOCK_PLATFORMS_PORT:-8100}
+      MOCK_PLATFORMS_DELIVERY_DIR: /opt/matchbook/data/generated/delivery
+      MOCK_PLATFORMS_FAULTS_ENABLED: ${MOCK_PLATFORMS_FAULTS_ENABLED:-true}
+      MOCK_PLATFORMS_FAULT_SEED: ${MOCK_PLATFORMS_FAULT_SEED:-42}
+      MOCK_PLATFORMS_RATE_429: ${MOCK_PLATFORMS_RATE_429:-0.05}
+      MOCK_PLATFORMS_RATE_500: ${MOCK_PLATFORMS_RATE_500:-0.02}
+      MOCK_PLATFORMS_RETRY_AFTER_SECONDS: ${MOCK_PLATFORMS_RETRY_AFTER_SECONDS:-1}
+    volumes:
+      - ./mock_platforms:/opt/matchbook/mock_platforms:ro
+      - ./orchestration:/opt/matchbook/orchestration:ro
+      - ./data/generated/delivery:/opt/matchbook/data/generated/delivery:ro
+    healthcheck:
+      test:
+        - CMD
+        - /opt/matchbook-venv/bin/python
+        - -c
+        - "import os, socket; socket.create_connection(('127.0.0.1', int(os.environ['MOCK_PLATFORMS_PORT'])), 2)"
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  airflow:
+    profiles: ["airflow"]
+    image: matchbook-airflow:local
+    build:
+      context: .
+      dockerfile: orchestration/Dockerfile
+    command: standalone
+    ports:
+      - "127.0.0.1:${AIRFLOW_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-postgres:
+        condition: service_healthy
+      airflow-mock-apis:
+        condition: service_healthy
+    environment:
+      # Airflow itself: metadata in its own Postgres, LocalExecutor, minimal footprint.
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:-}@airflow-postgres:5432/airflow
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__PARALLELISM: "4"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/matchbook/orchestration/dags
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: admin:admin
+      AIRFLOW__API__WORKERS: "1"
+      AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:-}
+      AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:-}
+      # Tasks (project venv): least-privilege roles only, no owner credentials in the URL.
+      DATABASE_URL: postgresql+psycopg://postgres:5432/${POSTGRES_DB:-matchbook}
+      ETL_DB_PASSWORD: ${ETL_DB_PASSWORD:-}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-}
+      AGENCY_TIMEZONE: ${AGENCY_TIMEZONE:-Europe/Vilnius}
+      APP_ENV: ${APP_ENV:-local}
+      INGEST_BASE_URL: http://airflow-mock-apis:${MOCK_PLATFORMS_PORT:-8100}
+      INGEST_PERIOD_START: ${INGEST_PERIOD_START:-}
+      INGEST_PERIOD_END: ${INGEST_PERIOD_END:-}
+      INGEST_PAGE_SIZE: ${INGEST_PAGE_SIZE:-100}
+      MOCK_PLATFORMS_TOKEN: ${MOCK_PLATFORMS_TOKEN:-}
+      MATCHBOOK_DATA_DIR: /opt/matchbook/data/generated
+      MATCHBOOK_RUN_STATE_DIR: /opt/airflow/run-state
+    volumes:
+      - ./backend:/opt/matchbook/backend:ro
+      - ./pipelines:/opt/matchbook/pipelines:ro
+      - ./orchestration:/opt/matchbook/orchestration:ro
+      # Only what the pipeline reads; answer_key.json is never mounted (decision 025).
+      - ./data/generated/reference.json:/opt/matchbook/data/generated/reference.json:ro
+      - ./data/generated/plans:/opt/matchbook/data/generated/plans:ro
+      - ./data/generated/invoices:/opt/matchbook/data/generated/invoices:ro
+      - ./data/generated/credit_notes:/opt/matchbook/data/generated/credit_notes:ro
+      - airflow_run_state:/opt/airflow/run-state
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://localhost:8080/api/v2/monitor/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
 volumes:
   postgres_data:
+  airflow_db_data:
+  airflow_run_state:
