@@ -18,6 +18,7 @@ from app.db.models.core import (
     AdAccount,
     Campaign,
     Client,
+    CreditNote,
     DailyDelivery,
     InsertionOrder,
     InvoiceLine,
@@ -27,7 +28,9 @@ from app.db.models.core import (
 from app.db.models.core import Invoice as InvoiceRow
 from app.db.session import create_app_engine, create_etl_engine
 from app.reconciliation.models import (
+    BillingTerms,
     BoundaryShift,
+    Budget,
     DeliveryGap,
     DeliveryRow,
     GapNote,
@@ -39,15 +42,26 @@ from app.reconciliation.models import (
     ReconciliationInput,
     SlotResult,
 )
+from app.reconciliation.models import CreditNote as ReconciliationCreditNote
 from app.reconciliation.rules import run_rules
 from sqlalchemy import Connection, Engine, bindparam, select, update
+from sqlalchemy.orm import aliased
 
 from pipelines.load_plans import client_ids, platform_ids
 from pipelines.normalize import DeliveryRecord, upsert
 from pipelines.quality import MONTH_BOUNDARY_SHIFT, check_missing_days, dedup_key
 
 RESULT_KEY = ("period", "client_id", "platform_id")
-RESULT_COLUMNS = ("delivered", "invoiced", "variance", "status", "run_id")
+RESULT_COLUMNS = (
+    "planned",
+    "delivered",
+    "invoiced",
+    "client_invoiced",
+    "expected_client_amount",
+    "variance",
+    "status",
+    "run_id",
+)
 ISSUE_COLUMNS = ("type", "severity", "amount", "explanation", "proposed_action", "run_id")
 
 CampaignKey = tuple[str, str]
@@ -230,18 +244,65 @@ def load_orders(conn: Connection) -> list[PlanOrder]:
     ]
 
 
+def load_budgets(conn: Connection) -> list[Budget]:
+    query = (
+        select(
+            Client.code,
+            Platform.name,
+            InsertionOrder.start_date,
+            InsertionOrder.end_date,
+            InsertionOrder.budget,
+        )
+        .join(Client, Client.id == InsertionOrder.client_id)
+        .join(Platform, Platform.id == InsertionOrder.platform_id)
+    )
+    return [
+        Budget(row.code, row.name, row.start_date, row.end_date, row.budget)
+        for row in conn.execute(query)
+    ]
+
+
+def load_billing(conn: Connection) -> dict[str, BillingTerms]:
+    query = select(Client.code, Client.billing_model, Client.markup_pct, Client.mgmt_fee)
+    return {
+        row.code: BillingTerms(row.billing_model, row.markup_pct, row.mgmt_fee)
+        for row in conn.execute(query)
+    }
+
+
+def load_credit_notes(conn: Connection) -> list[ReconciliationCreditNote]:
+    original = aliased(InvoiceRow)
+    query = select(
+        CreditNote.vendor,
+        CreditNote.number,
+        original.vendor.label("original_vendor"),
+        original.number.label("original_number"),
+        CreditNote.amount,
+    ).join(original, original.id == CreditNote.original_invoice_id)
+    return [
+        ReconciliationCreditNote(
+            vendor=row.vendor,
+            number=row.number,
+            original=(row.original_vendor, row.original_number),
+            amount=row.amount,
+        )
+        for row in conn.execute(query)
+    ]
+
+
 def load_input(conn: Connection, agency_timezone: str) -> ReconciliationInput:
     records, clients = load_delivery(conn)
     shifts, gaps = delivery_evidence(records, clients)
-    billing = {row.code: row.billing_model for row in conn.execute(select(Client))}
     return ReconciliationInput(
         agency_timezone=agency_timezone,
-        billing_models=billing,
+        billing=load_billing(conn),
         delivery=delivery_rows(records, clients),
         shifts=shifts,
         gaps=gaps,
         invoices=load_invoices(conn),
         orders=load_orders(conn),
+        budgets=load_budgets(conn),
+        credit_notes=load_credit_notes(conn),
     )
 
 
@@ -263,8 +324,11 @@ def write_results(conn: Connection, run_id: uuid.UUID, results: Sequence[SlotRes
             "period": result.slot.period,
             "client_id": clients[result.slot.client],
             "platform_id": platforms[result.slot.platform],
+            "planned": result.planned,
             "delivered": result.delivered,
             "invoiced": result.invoiced,
+            "client_invoiced": result.client_invoiced,
+            "expected_client_amount": result.expected_client_amount,
             "variance": result.variance,
             "status": result.status,
             "run_id": run_id,

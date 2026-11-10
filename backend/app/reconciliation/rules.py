@@ -1,20 +1,28 @@
 """Reconciliation rules per client × platform × month: pure functions over plain dataclasses."""
 
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 
 from app.reconciliation import templates
-from app.reconciliation.config import VARIANCE_MIN_EUR, VARIANCE_MIN_SHARE, missing_days_limit
+from app.reconciliation.client_billing import ClientMonth, check_client_invoices, is_fee_line
+from app.reconciliation.config import (
+    BUDGET_MAX_SHARE,
+    BUDGET_MIN_SHARE,
+    VARIANCE_MIN_EUR,
+    VARIANCE_MIN_SHARE,
+    missing_days_limit,
+)
 from app.reconciliation.models import (
-    BILLING_CLIENT_OWNED,
     KIND_PLATFORM,
     STATUS_INCOMPLETE,
     STATUS_ISSUE,
     STATUS_OK,
+    BillingTerms,
     BoundaryShift,
+    Budget,
     DeliveryGap,
     DeliveryRow,
     DuplicateInvoice,
@@ -29,6 +37,7 @@ from app.reconciliation.models import (
     Slot,
     SlotResult,
     UnmatchedLine,
+    month_start,
 )
 
 NO_CODE = "the line has no campaign code"
@@ -104,11 +113,6 @@ def match_line(
     if len(campaign_ids) > 1:
         return SEVERAL_CAMPAIGNS
     return LineLink(line.id, campaign_ids[0])
-
-
-def is_fee_line(invoice: Invoice, line: Line) -> bool:
-    """Client invoices carry a commission or fee line that belongs to no campaign."""
-    return invoice.kind != KIND_PLATFORM and line.campaign_ref is None
 
 
 def link_lines(
@@ -269,21 +273,74 @@ def invoiced_by_slot(invoices: Iterable[Invoice]) -> dict[Slot, Decimal]:
     return dict(amounts)
 
 
+def planned_by_slot(budgets: Iterable[Budget]) -> dict[Slot, Decimal | None]:
+    """Budgets of one-month orders; an order spanning months leaves each of them unknown."""
+    planned: dict[Slot, Decimal | None] = {}
+    for budget in budgets:
+        first, last = month_start(budget.start_date), month_start(budget.end_date)
+        if first != last:
+            period = first
+            while period <= last:
+                planned[Slot(budget.client, budget.platform, period)] = None
+                period = next_month(period)
+            continue
+        slot = Slot(budget.client, budget.platform, first)
+        current = planned.get(slot, ZERO)
+        planned[slot] = None if current is None else current + budget.amount
+    return planned
+
+
+def check_budget(slot: Slot, planned: Decimal, delivered: Decimal) -> IssueDraft | None:
+    """Rule 2: delivered vs the insertion order budget; the bounds themselves are fine."""
+    if planned * BUDGET_MIN_SHARE <= delivered <= planned * BUDGET_MAX_SHARE:
+        return None
+    issue_type = templates.BUDGET_OVERSPEND if delivered > planned else templates.BUDGET_UNDERSPEND
+    entity = f"{slot.client}:{slot.platform}:{templates.month_text(slot.period)}"
+    return IssueDraft(
+        dedup_key=f"reconciliation:budget:{entity}",
+        type=issue_type,
+        severity=templates.SEVERITIES[issue_type],
+        client=slot.client,
+        platform=slot.platform,
+        period=slot.period,
+        entity_type="client_platform_month",
+        entity_id=entity,
+        amount=delivered - planned,
+        explanation=templates.budget_explanation(slot, planned, delivered),
+        proposed_action=templates.PROPOSED_ACTIONS[issue_type],
+    )
+
+
+@dataclass(frozen=True)
+class Flags:
+    slots: set[Slot]  # Slots with an issue of their own.
+    client_months: set[ClientMonth]  # Client-months with a client-level issue.
+
+    def __contains__(self, slot: Slot) -> bool:
+        return slot in self.slots or (slot.client, slot.period) in self.client_months
+
+
 def slot_status(
     slot: Slot,
     delivered: Decimal | None,
     invoiced: Decimal | None,
-    flagged: set[Slot],
-    billing_models: dict[str, str],
+    flagged: Flags,
+    billing: Mapping[str, BillingTerms],
+    billed: set[ClientMonth],
 ) -> str:
     if slot in flagged:
         return STATUS_ISSUE
     if delivered is None:
         return STATUS_INCOMPLETE
+    terms = billing.get(slot.client)
+    is_agency_billed = terms is None or terms.is_agency_billed
     if invoiced is None:
-        is_billed_directly = billing_models.get(slot.client) == BILLING_CLIENT_OWNED
-        return STATUS_OK if is_billed_directly else STATUS_INCOMPLETE
-    return STATUS_ISSUE if is_material(invoiced - delivered, delivered) else STATUS_OK
+        return STATUS_INCOMPLETE if is_agency_billed else STATUS_OK
+    if is_material(invoiced - delivered, delivered):
+        return STATUS_ISSUE
+    if is_agency_billed and (slot.client, slot.period) not in billed:
+        return STATUS_INCOMPLETE
+    return STATUS_OK
 
 
 def slot_evidence(
@@ -304,12 +361,15 @@ def slot_evidence(
     )
 
 
-def flagged_slots(issues: Sequence[IssueDraft]) -> set[Slot]:
-    return {
-        Slot(issue.client, issue.platform, issue.period)
-        for issue in issues
-        if issue.platform is not None
-    }
+def flagged_slots(issues: Sequence[IssueDraft]) -> Flags:
+    return Flags(
+        slots={
+            Slot(issue.client, issue.platform, issue.period)
+            for issue in issues
+            if issue.platform is not None
+        },
+        client_months={(issue.client, issue.period) for issue in issues if issue.platform is None},
+    )
 
 
 def run_rules(data: ReconciliationInput) -> ReconciliationOutcome:
@@ -332,18 +392,29 @@ def run_rules(data: ReconciliationInput) -> ReconciliationOutcome:
         )
         issues.extend(drafts)
         notes.extend(gap_notes)
+    planned = planned_by_slot(data.budgets)
+    for slot in sorted(delivered.keys() & planned.keys()):
+        budget = planned[slot]
+        draft = None if budget is None else check_budget(slot, budget, delivered[slot])
+        if draft is not None:
+            issues.append(draft)
+    client = check_client_invoices(kept, data.orders, data.billing, data.credit_notes)
+    issues.extend(client.issues)
     flagged = flagged_slots(issues)
-    billing_models = dict(data.billing_models)
+    slots = delivered.keys() | invoiced.keys() | planned.keys() | client.client_invoiced.keys()
     results = []
-    for slot in sorted(delivered.keys() | invoiced.keys()):
+    for slot in sorted(slots | client.expected_client_amount.keys()):
         spent, billed = delivered.get(slot), invoiced.get(slot)
         results.append(
             SlotResult(
                 slot=slot,
+                planned=planned.get(slot),
                 delivered=spent,
                 invoiced=billed,
+                client_invoiced=client.client_invoiced.get(slot),
+                expected_client_amount=client.expected_client_amount.get(slot),
                 variance=None if spent is None or billed is None else billed - spent,
-                status=slot_status(slot, spent, billed, flagged, billing_models),
+                status=slot_status(slot, spent, billed, flagged, data.billing, client.billed),
             )
         )
     return ReconciliationOutcome(links=links, results=results, issues=issues, gap_notes=notes)

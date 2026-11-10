@@ -9,14 +9,21 @@ from typing import Any
 import pytest
 from app import reconciliation
 from app.reconciliation import templates
+from app.reconciliation.client_billing import expected_fee, split_by_weight
 from app.reconciliation.config import (
+    BUDGET_MAX_SHARE,
+    BUDGET_MIN_SHARE,
+    CLIENT_INVOICE_MIN_EUR,
     MISSING_DAY_SPEND_FACTOR,
     VARIANCE_MIN_EUR,
     VARIANCE_MIN_SHARE,
     missing_days_limit,
 )
 from app.reconciliation.models import (
+    BillingTerms,
     BoundaryShift,
+    Budget,
+    CreditNote,
     DeliveryGap,
     DeliveryRow,
     Invoice,
@@ -45,6 +52,8 @@ VILNIUS = "Europe/Vilnius"
 JUNE = date(2026, 6, 1)
 JULY = date(2026, 7, 1)
 SLOT = Slot("AAA", "meta", JUNE)
+MARKUP = BillingTerms("markup", markup_pct=Decimal("15.00"))
+CLIENT_OWNED = BillingTerms("client_owned")
 JULY_SLOT = Slot("AAA", "meta", JULY)
 
 
@@ -118,12 +127,14 @@ def order(**overrides: Any) -> PlanOrder:
 def outcome(**overrides: Any) -> ReconciliationOutcome:
     values: dict[str, Any] = {
         "agency_timezone": VILNIUS,
-        "billing_models": {"AAA": "markup"},
+        "billing": {"AAA": MARKUP},
         "delivery": [],
         "shifts": [],
         "gaps": [],
         "invoices": [],
         "orders": [order()],
+        "budgets": [],
+        "credit_notes": [],
     }
     return run_rules(ReconciliationInput(**{**values, **overrides}))
 
@@ -213,7 +224,11 @@ def test_invoice_below_delivery_is_an_undercharge() -> None:
 
 
 def test_variance_within_thresholds_is_ok() -> None:
-    result = outcome(delivery=delivery(JUNE, ["1000.00"]), invoices=[invoice("1004.00")])
+    result = outcome(
+        delivery=delivery(JUNE, ["1000.00"]),
+        invoices=[invoice("1004.00")],
+        billing={"AAA": CLIENT_OWNED},
+    )
     assert result.issues == []
     assert result_for(result, SLOT).status == "ok"
 
@@ -245,7 +260,11 @@ def test_two_different_invoices_for_one_month_are_summed() -> None:
 
 def test_client_invoices_are_not_compared_with_delivery() -> None:
     client_invoice = invoice("500.00", kind="client", platform=None, vendor="Agency")
-    result = outcome(delivery=delivery(JUNE, ["100.00"]), invoices=[client_invoice])
+    result = outcome(
+        delivery=delivery(JUNE, ["100.00"]),
+        invoices=[client_invoice],
+        billing={"AAA": CLIENT_OWNED},
+    )
     assert result.issues == []
     assert result_for(result, SLOT).invoiced is None
 
@@ -577,7 +596,7 @@ def test_line_of_a_duplicate_is_linked_but_not_reported_twice() -> None:
 
 
 def test_client_owned_month_without_an_invoice_is_ok() -> None:
-    result = outcome(delivery=delivery(JUNE, ["10.00"]), billing_models={"AAA": "client_owned"})
+    result = outcome(delivery=delivery(JUNE, ["10.00"]), billing={"AAA": CLIENT_OWNED})
     item = result_for(result, SLOT)
     assert (item.invoiced, item.variance, item.status) == (None, None, "ok")
 
@@ -629,3 +648,401 @@ def test_sources_never_mention_the_answer_key() -> None:
     package = Path(reconciliation.__file__).parent
     for path in package.glob("*.py"):
         assert "answer_key" not in path.read_text(encoding="utf-8")
+
+
+# --- rule 2: delivered vs IO budget --------------------------------------------------------
+
+DECEMBER = date(2026, 12, 1)
+JANUARY = date(2027, 1, 1)
+
+
+def month_end(period: date) -> date:
+    return (period + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+
+
+def budget(amount: str, period: date = JUNE, **overrides: Any) -> Budget:
+    values: dict[str, Any] = {
+        "client": "AAA",
+        "platform": "meta",
+        "start_date": period,
+        "end_date": month_end(period),
+        "amount": money(amount),
+    }
+    return Budget(**{**values, **overrides})
+
+
+def budget_outcome(
+    delivered: str, planned: str = "1000.00", **overrides: Any
+) -> ReconciliationOutcome:
+    values: dict[str, Any] = {
+        "delivery": delivery(JUNE, [delivered]),
+        "budgets": [budget(planned)],
+        "billing": {"AAA": CLIENT_OWNED},
+    }
+    return outcome(**{**values, **overrides})
+
+
+def test_budget_and_client_invoice_thresholds_are_the_agreed_values() -> None:
+    assert (BUDGET_MIN_SHARE, BUDGET_MAX_SHARE) == (money("0.85"), money("1.15"))
+    assert CLIENT_INVOICE_MIN_EUR == money("1.00")
+
+
+def test_delivery_above_115_percent_of_budget_is_an_overspend() -> None:
+    result = budget_outcome("1150.01")
+    issue = only_issue(result)
+    assert issue.type == templates.BUDGET_OVERSPEND
+    assert issue.amount == money("150.01")
+    assert issue.dedup_key == "reconciliation:budget:AAA:meta:2026-06"
+    assert "EUR 1,000.00" in issue.explanation
+    item = result_for(result, SLOT)
+    assert (item.planned, item.status) == (money("1000.00"), "issue")
+
+
+def test_delivery_below_85_percent_of_budget_is_an_underspend() -> None:
+    issue = only_issue(budget_outcome("849.99"))
+    assert issue.type == templates.BUDGET_UNDERSPEND
+    assert issue.amount == money("-150.01")
+
+
+def test_delivery_within_the_budget_band_is_ok() -> None:
+    result = budget_outcome("1000.00")
+    assert result.issues == []
+    assert result_for(result, SLOT).status == "ok"
+
+
+@pytest.mark.parametrize("delivered", ["850.00", "1150.00"])
+def test_exactly_85_or_115_percent_of_budget_does_not_fire(delivered: str) -> None:
+    assert budget_outcome(delivered).issues == []
+
+
+def test_budget_key_ignores_the_classification() -> None:
+    over, under = only_issue(budget_outcome("2000.00")), only_issue(budget_outcome("10.00"))
+    assert over.dedup_key == under.dedup_key
+
+
+def test_client_owned_clients_get_the_budget_rule_only() -> None:
+    client_invoice = invoice("1.00", kind="client", platform=None, vendor="Agency", number="AG-1")
+    result = budget_outcome("2000.00", invoices=[client_invoice])
+    assert types(result) == [templates.BUDGET_OVERSPEND]
+    item = result_for(result, SLOT)
+    assert (item.client_invoiced, item.expected_client_amount) == (None, None)
+
+
+def test_budgets_of_december_and_january_are_separate_slots() -> None:
+    result = outcome(
+        delivery=[*delivery(DECEMBER, ["1000.00"]), *delivery(JANUARY, ["300.00"])],
+        budgets=[budget("1000.00", DECEMBER), budget("500.00", JANUARY)],
+        billing={"AAA": CLIENT_OWNED},
+    )
+    issue = only_issue(result)
+    assert (issue.period, issue.dedup_key) == (JANUARY, "reconciliation:budget:AAA:meta:2027-01")
+    assert result_for(result, Slot("AAA", "meta", DECEMBER)).planned == money("1000.00")
+
+
+def test_two_orders_in_one_month_are_summed() -> None:
+    result = budget_outcome("1000.00", budgets=[budget("600.00"), budget("400.00")])
+    assert result.issues == []
+    assert result_for(result, SLOT).planned == money("1000.00")
+
+
+def test_an_order_spanning_months_leaves_planned_unknown() -> None:
+    spanning = budget("1000.00", end_date=date(2026, 7, 31))
+    result = budget_outcome("10.00", budgets=[spanning, budget("10.00")])
+    assert result.issues == []
+    assert result_for(result, SLOT).planned is None
+    assert result_for(result, JULY_SLOT).planned is None
+
+
+def test_a_budget_without_delivery_is_incomplete_and_not_an_underspend() -> None:
+    result = outcome(budgets=[budget("1000.00")], billing={"AAA": CLIENT_OWNED})
+    assert result.issues == []
+    item = result_for(result, SLOT)
+    assert (item.planned, item.delivered, item.status) == (money("1000.00"), None, "incomplete")
+
+
+# --- rule 3: client invoice vs billing model -----------------------------------------------
+
+META_REF = "AAA-META-2606"
+GOOGLE_REF = "AAA-GOOGLE-2606"
+GOOGLE_SLOT = Slot("AAA", "google", JUNE)
+MANAGEMENT_FEE = BillingTerms("mgmt_fee", mgmt_fee=Decimal("500.00"))
+
+
+def client_invoice(
+    *lines: tuple[str | None, str], number: str = "AG-1", period: date = JUNE, **overrides: Any
+) -> Invoice:
+    """`lines` are (campaign code, amount); a line without a code is the fee."""
+    values: dict[str, Any] = {
+        "kind": "client",
+        "vendor": "Agency",
+        "number": number,
+        "client": "AAA",
+        "platform": None,
+        "issue_date": period + timedelta(days=40),
+        "period_start": period,
+        "period_end": month_end(period),
+        "lines": tuple(
+            Line(100 + no, no, ref, money(amount)) for no, (ref, amount) in enumerate(lines, 1)
+        ),
+    }
+    return Invoice(**{**values, **overrides})
+
+
+def credit(amount: str, number: str = "CN-1", original: str = "INV-1") -> CreditNote:
+    return CreditNote("Meta", number, ("Meta", original), money(amount))
+
+
+def billed(*client_invoices: Invoice, **overrides: Any) -> ReconciliationOutcome:
+    """June meta: 1000.00 delivered and billed by the platform, plus the client invoices."""
+    values: dict[str, Any] = {
+        "delivery": delivery(JUNE, ["1000.00"]),
+        "invoices": [invoice("1000.00"), *client_invoices],
+    }
+    return outcome(**{**values, **overrides})
+
+
+def two_platforms(*client_invoices: Invoice) -> ReconciliationOutcome:
+    google_invoice = invoice(
+        "333.33",
+        vendor="Google",
+        platform="google",
+        lines=(Line(2, 1, GOOGLE_REF, money("333.33")),),
+    )
+    return billed(
+        *client_invoices,
+        delivery=[*delivery(JUNE, ["1000.00"]), *delivery(JUNE, ["333.33"], platform="google")],
+        invoices=[invoice("1000.00"), google_invoice, *client_invoices],
+        orders=[order(), order(platform="google", campaign_ref=GOOGLE_REF, campaign_ids=(8,))],
+    )
+
+
+def test_fee_is_rounded_half_up_to_cents() -> None:
+    terms = BillingTerms("markup", markup_pct=Decimal("12.50"))
+    assert expected_fee(money("100.20"), terms) == money("12.53")
+    assert expected_fee(money("0.04"), terms) == money("0.01")
+    assert expected_fee(money("100.10"), terms) == money("12.51")
+
+
+def test_management_fee_is_the_contract_amount() -> None:
+    assert expected_fee(money("123.45"), MANAGEMENT_FEE) == money("500.00")
+
+
+def test_correct_markup_makes_no_issue_and_the_month_is_ok() -> None:
+    result = billed(client_invoice((META_REF, "1000.00"), (None, "150.00")))
+    assert result.issues == []
+    item = result_for(result, SLOT)
+    assert (item.client_invoiced, item.expected_client_amount, item.status) == (
+        money("1150.00"),
+        money("1150.00"),
+        "ok",
+    )
+
+
+def test_wrong_markup_is_a_client_level_issue() -> None:
+    result = two_platforms(
+        client_invoice((META_REF, "1000.00"), (GOOGLE_REF, "333.33"), (None, "253.33"))
+    )
+    issue = only_issue(result)
+    assert issue.type == templates.WRONG_MARKUP
+    assert (issue.platform, issue.amount) == (None, money("53.33"))
+    assert issue.dedup_key == "reconciliation:client_fee:AAA:2026-06"
+    assert "15.00%" in issue.explanation
+    assert result_for(result, SLOT).status == result_for(result, GOOGLE_SLOT).status == "issue"
+
+
+def test_fee_exactly_one_euro_off_does_not_fire() -> None:
+    result = billed(client_invoice((META_REF, "1000.00"), (None, "151.00")))
+    assert result.issues == []
+
+
+def test_fee_just_over_one_euro_off_fires() -> None:
+    result = billed(client_invoice((META_REF, "1000.00"), (None, "148.99")))
+    assert only_issue(result).amount == money("-1.01")
+
+
+def test_wrong_management_fee_fires_and_the_right_one_does_not() -> None:
+    right = billed(
+        client_invoice((META_REF, "1000.00"), (None, "500.00")), billing={"AAA": MANAGEMENT_FEE}
+    )
+    wrong = billed(
+        client_invoice((META_REF, "1000.00"), (None, "550.00")), billing={"AAA": MANAGEMENT_FEE}
+    )
+    assert right.issues == []
+    issue = only_issue(wrong)
+    assert (issue.type, issue.amount) == (templates.WRONG_MARKUP, money("50.00"))
+    assert "management fee" in issue.explanation
+
+
+def test_an_applied_credit_makes_no_issue() -> None:
+    result = billed(
+        client_invoice((META_REF, "1000.00"), (META_REF, "-50.00"), (None, "142.50")),
+        credit_notes=[credit("50.00")],
+    )
+    assert result.issues == []
+    item = result_for(result, SLOT)
+    assert item.client_invoiced == item.expected_client_amount == money("1092.50")
+
+
+def test_a_missing_credit_is_one_issue_and_not_also_a_wrong_markup() -> None:
+    result = billed(
+        client_invoice((META_REF, "1000.00"), (None, "150.00")),
+        credit_notes=[credit("50.00")],
+    )
+    issue = only_issue(result)
+    assert issue.type == templates.CREDIT_NOT_APPLIED
+    assert (issue.platform, issue.amount) == ("meta", money("50.00"))
+    assert issue.dedup_key == "reconciliation:credit:AAA:meta:2026-06"
+    assert "CN-1" in issue.explanation and "commission" in issue.explanation
+    item = result_for(result, SLOT)
+    assert (item.client_invoiced, item.expected_client_amount, item.status) == (
+        money("1150.00"),
+        money("1092.50"),
+        "issue",
+    )
+
+
+def test_a_partly_applied_credit_is_flagged_for_the_remainder() -> None:
+    result = billed(
+        client_invoice((META_REF, "1000.00"), (META_REF, "-20.00"), (None, "147.00")),
+        credit_notes=[credit("50.00")],
+    )
+    assert only_issue(result).amount == money("30.00")
+
+
+def test_a_credit_exactly_one_euro_short_does_not_fire() -> None:
+    result = billed(
+        client_invoice((META_REF, "1000.00"), (META_REF, "-49.00"), (None, "142.65")),
+        credit_notes=[credit("50.00")],
+    )
+    assert result.issues == []
+
+
+def test_more_credit_than_the_platform_gave_is_flagged() -> None:
+    result = billed(
+        client_invoice((META_REF, "1000.00"), (META_REF, "-80.00"), (None, "138.00")),
+        credit_notes=[credit("50.00")],
+    )
+    issue = only_issue(result)
+    assert (issue.type, issue.amount) == (templates.CREDIT_OVER_APPLIED, money("-30.00"))
+    assert issue.dedup_key == "reconciliation:credit:AAA:meta:2026-06"
+
+
+def test_a_credit_on_a_duplicate_copy_is_not_expected_on_the_client_invoice() -> None:
+    copy = invoice("1000.00", number="INV-2", issue_date=date(2026, 7, 9))
+    result = billed(
+        client_invoice((META_REF, "1000.00"), (None, "150.00")),
+        invoices=[
+            invoice("1000.00"),
+            copy,
+            client_invoice((META_REF, "1000.00"), (None, "150.00")),
+        ],
+        credit_notes=[credit("50.00", original="INV-2")],
+    )
+    assert types(result) == [templates.DUPLICATE_INVOICE]
+
+
+def test_a_december_credit_is_checked_in_december_not_january() -> None:
+    dec_ref, jan_ref = "AAA-META-2612", "AAA-META-2701"
+    platform_invoices = [
+        invoice(
+            "1000.00",
+            number=f"INV-{period.month}",
+            period_start=period,
+            period_end=month_end(period),
+            issue_date=period + timedelta(days=35),
+            lines=(Line(period.month, 1, ref, money("1000.00")),),
+        )
+        for period, ref in ((DECEMBER, dec_ref), (JANUARY, jan_ref))
+    ]
+    result = outcome(
+        delivery=[*delivery(DECEMBER, ["1000.00"]), *delivery(JANUARY, ["1000.00"])],
+        invoices=[
+            *platform_invoices,
+            client_invoice((dec_ref, "1000.00"), (None, "150.00"), number="AG-12", period=DECEMBER),
+            client_invoice((jan_ref, "1000.00"), (None, "150.00"), number="AG-01", period=JANUARY),
+        ],
+        orders=[order(campaign_ref=dec_ref), order(campaign_ref=jan_ref, campaign_ids=(8,))],
+        credit_notes=[credit("50.00", original="INV-12")],
+    )
+    issue = only_issue(result)
+    assert (issue.type, issue.period) == (templates.CREDIT_NOT_APPLIED, DECEMBER)
+    assert issue.dedup_key == "reconciliation:credit:AAA:meta:2026-12"
+    assert result_for(result, Slot("AAA", "meta", JANUARY)).status == "ok"
+
+
+def test_a_legitimate_second_client_invoice_is_combined_not_a_duplicate() -> None:
+    first = client_invoice((META_REF, "800.00"), (None, "120.00"))
+    second = client_invoice((META_REF, "200.00"), (None, "30.00"), number="AG-2")
+    result = billed(first, second)
+    assert result.issues == []
+    assert result_for(result, SLOT).client_invoiced == money("1150.00")
+
+
+def test_a_duplicated_client_invoice_counts_once() -> None:
+    first = client_invoice((META_REF, "1000.00"), (None, "150.00"))
+    copy = client_invoice(
+        (META_REF, "1000.00"), (None, "150.00"), number="AG-2", issue_date=date(2026, 7, 20)
+    )
+    result = billed(first, copy)
+    assert types(result) == [templates.DUPLICATE_INVOICE]
+    assert result_for(result, SLOT).client_invoiced == money("1150.00")
+
+
+def test_agency_billed_month_without_a_client_invoice_is_incomplete() -> None:
+    result = billed()
+    assert result.issues == []
+    item = result_for(result, SLOT)
+    assert (item.client_invoiced, item.expected_client_amount, item.status) == (
+        None,
+        None,
+        "incomplete",
+    )
+
+
+def test_an_unattributed_line_leaves_the_columns_unknown_but_checks_the_fee() -> None:
+    result = billed(client_invoice((META_REF, "1000.00"), ("UNKNOWN", "10.00"), (None, "100.00")))
+    assert sorted(types(result)) == sorted([templates.NEEDS_MATCHING, templates.WRONG_MARKUP])
+    item = result_for(result, SLOT)
+    assert (item.client_invoiced, item.expected_client_amount) == (None, None)
+
+
+# --- splitting a client invoice over platforms ---------------------------------------------
+
+
+def test_split_by_weight_uses_the_largest_remainder() -> None:
+    parts = split_by_weight(money("100.00"), {"c": Decimal(1), "a": Decimal(1), "b": Decimal(1)})
+    assert parts == {"a": money("33.34"), "b": money("33.33"), "c": money("33.33")}
+
+
+def test_split_by_weight_gives_the_cent_to_the_largest_remainder_not_the_first_name() -> None:
+    parts = split_by_weight(money("0.10"), {"a": Decimal(1), "b": Decimal(2)})
+    assert parts == {"a": money("0.03"), "b": money("0.07")}
+
+
+def test_split_by_weight_breaks_ties_by_name() -> None:
+    assert split_by_weight(money("0.01"), {"b": Decimal(1), "a": Decimal(1)}) == {
+        "a": money("0.01"),
+        "b": money("0.00"),
+    }
+
+
+@pytest.mark.parametrize(
+    "weights", [{"a": Decimal(0), "b": Decimal(0)}, {"a": Decimal(-1), "b": Decimal(3)}]
+)
+def test_split_by_weight_without_usable_weights_is_equal(weights: dict[str, Decimal]) -> None:
+    assert split_by_weight(money("10.01"), weights) == {"a": money("5.01"), "b": money("5.00")}
+
+
+def test_split_by_weight_of_a_negative_amount_sums_exactly() -> None:
+    parts = split_by_weight(money("-0.10"), {"a": Decimal(1), "b": Decimal(1), "c": Decimal(1)})
+    assert sum(parts.values()) == money("-0.10")
+
+
+def test_client_invoiced_rows_sum_exactly_to_the_invoice() -> None:
+    fee_invoice = client_invoice((META_REF, "1000.00"), (GOOGLE_REF, "333.33"), (None, "200.00"))
+    result = two_platforms(fee_invoice)
+    assert result.issues == []
+    meta, google = result_for(result, SLOT), result_for(result, GOOGLE_SLOT)
+    assert (meta.client_invoiced, google.client_invoiced) == (money("1150.00"), money("383.33"))
+    assert meta.client_invoiced + google.client_invoiced == fee_invoice.net
+    assert meta.expected_client_amount + google.expected_client_amount == fee_invoice.net

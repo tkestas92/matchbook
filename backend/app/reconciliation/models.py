@@ -6,6 +6,8 @@ from datetime import date
 from decimal import Decimal
 
 KIND_PLATFORM = "platform"
+BILLING_MARKUP = "markup"
+BILLING_MANAGEMENT_FEE = "mgmt_fee"
 BILLING_CLIENT_OWNED = "client_owned"
 STATUS_OK = "ok"
 STATUS_ISSUE = "issue"
@@ -120,14 +122,48 @@ class PlanOrder:
 
 
 @dataclass(frozen=True)
+class Budget:
+    """An insertion order's budget over its dates."""
+
+    client: str
+    platform: str
+    start_date: date
+    end_date: date
+    amount: Decimal
+
+
+@dataclass(frozen=True)
+class BillingTerms:
+    model: str  # markup, mgmt_fee or client_owned.
+    markup_pct: Decimal | None = None
+    mgmt_fee: Decimal | None = None
+
+    @property
+    def is_agency_billed(self) -> bool:
+        return self.model != BILLING_CLIENT_OWNED
+
+
+@dataclass(frozen=True)
+class CreditNote:
+    """A platform credit note; `amount` is its net subtotal, positive as printed."""
+
+    vendor: str
+    number: str
+    original: tuple[str, str]  # The `Invoice.key` of the platform invoice it credits.
+    amount: Decimal
+
+
+@dataclass(frozen=True)
 class ReconciliationInput:
     agency_timezone: str
-    billing_models: Mapping[str, str]
+    billing: Mapping[str, BillingTerms]
     delivery: Sequence[DeliveryRow]
     shifts: Sequence[BoundaryShift]
     gaps: Sequence[DeliveryGap]
     invoices: Sequence[Invoice]
     orders: Sequence[PlanOrder]
+    budgets: Sequence[Budget]
+    credit_notes: Sequence[CreditNote]
 
 
 @dataclass(frozen=True)
@@ -176,8 +212,11 @@ class GapNote:
 @dataclass(frozen=True)
 class SlotResult:
     slot: Slot
-    delivered: Decimal | None  # None means the source is missing, not zero.
+    planned: Decimal | None  # None means the source is missing, not zero.
+    delivered: Decimal | None
     invoiced: Decimal | None
+    client_invoiced: Decimal | None
+    expected_client_amount: Decimal | None
     variance: Decimal | None
     status: str
 
