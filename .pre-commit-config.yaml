@@ -5,3 +5,8 @@ repos:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+  # Secret scan of staged changes (threat model T6, task 2.4).
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks

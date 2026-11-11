@@ -8,6 +8,7 @@ from alembic import command
 from app.config import Settings, get_settings
 from app.db.roles import MissingRolePasswordError, ensure_roles, role_passwords
 from app.db.session import app_database_url, etl_database_url
+from app.llm import gemini
 from pydantic import ValidationError
 from sqlalchemy import Engine, create_engine, text
 from tests.test_migrations import alembic_config, temporary_database
@@ -31,6 +32,17 @@ class PipelineDb:
     owner: Engine
     etl: Engine
     app: Engine
+
+
+@pytest.fixture(autouse=True)
+def no_real_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test sees a real LLM key or can build a real network client for a provider."""
+
+    def refuse(timeout_seconds: float) -> None:
+        raise AssertionError("real LLM network client requested in a test")
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(gemini, "default_http_client", refuse)
 
 
 @pytest.fixture(scope="session")
