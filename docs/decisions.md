@@ -328,3 +328,14 @@ New entries go at the bottom. Format: context → decision → consequences.
 **Context:** the development key is on Google's free tier. Under the Gemini API terms, free-tier prompts and responses may be used to improve Google's products and may be read by human reviewers, and the data is not covered by the paid-tier processing terms.
 **Decision:** the free-tier key is used only with this project's synthetic data (decisions 009, 037). Real client documents never go to the free tier, masked or not. Any real data needs a paid, data-processing-agreement provider, planned as Azure OpenAI in an EU region for stage 5.
 **Consequences:** stage-2 runs and evals may use the free tier. Moving to real data is a configuration and contract change (provider, key, prices), not a code change in callers.
+
+## 041 — Default model `gemini-3.1-flash-lite`; `make llm-smoke` for live checks
+**Context:** a live call to `models/gemini-2.5-flash-lite` (039's default) returned HTTP 404: Google says the model is "no longer available to new users". The owner's key gets HTTP 200 from `models/gemini-3.1-flash-lite`.
+**Decision:**
+- The default `LLM_MODEL` is `gemini-3.1-flash-lite`, priced at its list price of USD 0.25 per 1M input and USD 1.50 per 1M output tokens, counted as EUR (039). The `gemini-2.5-flash-lite` price entry stays for keys that can still call it.
+- Google retires models for new users while older keys keep them, so the model is configuration (`LLM_MODEL`), and a model without a price entry is refused (039).
+- Preview models are never defaults: they change or vanish without notice.
+- `gemini-3.5-flash-lite` exists, but we have not checked its price, so it is not the default.
+- `make llm-smoke` (`backend/app/llm/smoke.py`) makes one live call with invented text holding a fake email and an example IBAN. It prints only the model, the parsed result, tokens, cost, attempts, and whether the provider got `[EMAIL_1]`/`[IBAN_1]` instead of the originals. It never prints the key, headers, URL or raw body, and tests and CI never run it.
+- `gemini.py` still sends `thinkingConfig.thinkingBudget = 0`. Gemini 3.x prefers `thinkingLevel` and may treat budget 0 as "lowest", not "off". Sending both fields is rejected. Thought tokens are already billed as output and counted inside `maxOutputTokens`, so the caps hold either way. A 400 or a high output-token count in `make llm-smoke` is the signal to switch to `thinkingLevel`.
+**Consequences:** a fresh key works with no `.env` change, and a retired model shows up as a `ProviderError (HTTP 404)` in one command instead of in the nightly run.

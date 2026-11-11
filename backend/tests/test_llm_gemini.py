@@ -18,7 +18,7 @@ from pydantic import SecretStr
 KEY = "test-key-not-real-0000"
 BASE_URL = "https://gemini.test/v1beta"
 REQUEST = ModelRequest(
-    model="gemini-2.5-flash-lite",
+    model="gemini-3.1-flash-lite",
     system="Return JSON.",
     user_text="Invoice [IBAN_1] total 1.00",
     json_schema={"type": "object", "properties": {"total": {"type": "string"}}},
@@ -53,7 +53,7 @@ def test_request_body_is_strict_json_with_no_tools() -> None:
     request = seen[0]
     body = json.loads(request.content)
     assert request.method == "POST"
-    assert str(request.url) == f"{BASE_URL}/models/gemini-2.5-flash-lite:generateContent"
+    assert str(request.url) == f"{BASE_URL}/models/gemini-3.1-flash-lite:generateContent"
     assert set(body) == {"systemInstruction", "contents", "generationConfig"}
     raw = request.content.decode()
     for forbidden in ("tools", "toolConfig", "functionDeclarations", "functionCall"):
