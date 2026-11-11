@@ -123,7 +123,94 @@ services:
       retries: 20
       start_period: 60s
 
+  # --- Public demo (`make demo-init`, `make demo-up`; decision 036) ---
+  # Always started by service name: `--profile demo up` alone would also start `postgres`.
+
+  demo-postgres:
+    profiles: ["demo"]
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    # No ports: only demo-init and demo-api reach it, over the compose network.
+    volumes:
+      - demo_postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  demo-init:
+    profiles: ["demo"]
+    image: matchbook-demo-init:local
+    build:
+      context: .
+      dockerfile: deploy/demo/Dockerfile
+      target: demo-init
+    depends_on:
+      demo-postgres:
+        condition: service_healthy
+    restart: "no"
+    # Generated files (answer key included) die with the container; writable by uid 10001 only.
+    tmpfs:
+      - /app/data:uid=10001,gid=10001,mode=0700
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@demo-postgres:5432/${POSTGRES_DB}
+      ETL_DB_PASSWORD: ${ETL_DB_PASSWORD}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+      AGENT_RO_DB_PASSWORD: ${AGENT_RO_DB_PASSWORD}
+      EVAL_RUNNER_DB_PASSWORD: ${EVAL_RUNNER_DB_PASSWORD}
+      DEMO_RO_DB_PASSWORD: ${DEMO_RO_DB_PASSWORD}
+      AGENCY_TIMEZONE: ${AGENCY_TIMEZONE:-Europe/Vilnius}
+      APP_ENV: demo
+      INGEST_BASE_URL: http://127.0.0.1:8100
+      INGEST_PERIOD_START: ${INGEST_PERIOD_START:-2026-05-01}
+      INGEST_PERIOD_END: ${INGEST_PERIOD_END:-2026-10-31}
+      INGEST_PAGE_SIZE: ${INGEST_PAGE_SIZE:-100}
+      MOCK_PLATFORMS_PORT: "8100"
+      MOCK_PLATFORMS_DELIVERY_DIR: data/generated/delivery
+      MOCK_PLATFORMS_FAULTS_ENABLED: "false"
+
+  demo-api:
+    profiles: ["demo"]
+    image: matchbook-demo-api:local
+    build:
+      context: .
+      dockerfile: deploy/demo/Dockerfile
+      target: demo-api
+    ports:
+      - "127.0.0.1:${DEMO_API_PORT:-8200}:8200"
+    depends_on:
+      demo-postgres:
+        condition: service_healthy
+    # Only the demo_ro password; the URL carries no credentials (decision 035).
+    environment:
+      DATABASE_URL: postgresql+psycopg://demo-postgres:5432/${POSTGRES_DB}
+      DEMO_RO_DB_PASSWORD: ${DEMO_RO_DB_PASSWORD}
+      APP_ENV: demo
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8200/health', timeout=2)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
 volumes:
   postgres_data:
   airflow_db_data:
   airflow_run_state:
+  demo_postgres_data:
