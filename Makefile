@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help up down roles migrate test lint format generate mock-apis pipeline eval eval-load-key eval-stage1 \
-	airflow-up airflow-down airflow-password airflow-check demo-api \
+	llm-smoke airflow-up airflow-down airflow-password airflow-check demo-api \
 	demo-check-env demo-init demo-up demo-down demo-logs
 
 help: ## List available targets
@@ -46,6 +46,9 @@ eval-stage1: ## Compare app.issues with eval.answer_key; fails on a missed error
 
 eval: ## Run evals (stage 2)
 	@echo "not yet implemented (stage 2)"
+
+llm-smoke: ## Owner: one live LLM call with invented text (needs GEMINI_API_KEY; never in tests/CI)
+	PYTHONPATH=backend uv run python -m app.llm.smoke
 
 AIRFLOW_ENV_VARS := AIRFLOW_DB_PASSWORD AIRFLOW_JWT_SECRET AIRFLOW_API_SECRET_KEY
 AIRFLOW_SERVICES := airflow airflow-mock-apis airflow-postgres

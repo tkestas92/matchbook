@@ -29,12 +29,22 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
 def test_llm_defaults(clean_env: pytest.MonkeyPatch) -> None:
     settings = Settings(_env_file=None)
     assert settings.llm_provider == "gemini"
-    assert settings.llm_model == "gemini-2.5-flash-lite"
+    assert settings.llm_model == "gemini-3.1-flash-lite"
     assert settings.gemini_api_key is None
     assert settings.llm_run_cap_eur == Decimal("0.20")
     assert settings.llm_monthly_cap_eur == Decimal("1")
-    price = settings.llm_prices_eur_per_mtok["gemini-2.5-flash-lite"]
-    assert isinstance(price.input_eur_per_mtok, Decimal)
+    price = settings.llm_prices_eur_per_mtok["gemini-3.1-flash-lite"]
+    assert price.input_eur_per_mtok == Decimal("0.25")
+    assert price.output_eur_per_mtok == Decimal("1.50")
+
+
+def test_retired_default_keeps_its_price(clean_env: pytest.MonkeyPatch) -> None:
+    """Decision 041: keys that still reach gemini-2.5-flash-lite can set it via LLM_MODEL."""
+    price = Settings(_env_file=None).llm_prices_eur_per_mtok["gemini-2.5-flash-lite"]
+    assert (price.input_eur_per_mtok, price.output_eur_per_mtok) == (
+        Decimal("0.10"),
+        Decimal("0.40"),
+    )
 
 
 def test_model_and_caps_come_from_the_environment(clean_env: pytest.MonkeyPatch) -> None:
@@ -67,7 +77,7 @@ def test_key_is_hidden_and_used_only_by_the_provider(clean_env: pytest.MonkeyPat
     mock = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(500)))
     client = create_llm_client(settings, new_run_ledger(settings, Decimal(0)), http_client=mock)
     assert isinstance(client.provider, GeminiProvider)
-    assert client.limits.model == "gemini-2.5-flash-lite"
+    assert client.limits.model == "gemini-3.1-flash-lite"
 
 
 def test_tests_cannot_build_a_real_network_client(clean_env: pytest.MonkeyPatch) -> None:

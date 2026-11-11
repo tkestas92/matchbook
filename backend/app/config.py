@@ -18,6 +18,9 @@ DEFAULT_LLM_PRICES = {
     "gemini-2.5-flash-lite": ModelPrice(
         input_eur_per_mtok=Decimal("0.10"), output_eur_per_mtok=Decimal("0.40")
     ),
+    "gemini-3.1-flash-lite": ModelPrice(
+        input_eur_per_mtok=Decimal("0.25"), output_eur_per_mtok=Decimal("1.50")
+    ),
 }
 
 
@@ -35,9 +38,9 @@ class Settings(BaseSettings):
     eval_runner_db_password: SecretStr | None = None
     demo_ro_db_password: SecretStr | None = None
 
-    # LLM access layer (backend/app/llm/, decisions 039 and 040).
+    # LLM access layer (backend/app/llm/, decisions 039, 040 and 041).
     llm_provider: Literal["gemini"] = "gemini"
-    llm_model: str = "gemini-2.5-flash-lite"
+    llm_model: str = "gemini-3.1-flash-lite"
     gemini_api_key: SecretStr | None = None
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     llm_timeout_seconds: float = 30.0
