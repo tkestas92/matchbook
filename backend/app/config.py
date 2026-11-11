@@ -1,7 +1,24 @@
+from decimal import Decimal
 from functools import lru_cache
+from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import BaseModel, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class ModelPrice(BaseModel):
+    """List price in EUR per million tokens (decision 039)."""
+
+    input_eur_per_mtok: Decimal
+    output_eur_per_mtok: Decimal
+
+
+# Paid list price (USD) used as EUR, so the caps err high. Check against the provider's price page.
+DEFAULT_LLM_PRICES = {
+    "gemini-2.5-flash-lite": ModelPrice(
+        input_eur_per_mtok=Decimal("0.10"), output_eur_per_mtok=Decimal("0.40")
+    ),
+}
 
 
 class Settings(BaseSettings):
@@ -17,6 +34,24 @@ class Settings(BaseSettings):
     agent_ro_db_password: SecretStr | None = None
     eval_runner_db_password: SecretStr | None = None
     demo_ro_db_password: SecretStr | None = None
+
+    # LLM access layer (backend/app/llm/, decisions 039 and 040).
+    llm_provider: Literal["gemini"] = "gemini"
+    llm_model: str = "gemini-2.5-flash-lite"
+    gemini_api_key: SecretStr | None = None
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    llm_timeout_seconds: float = 30.0
+    llm_max_input_chars: int = 50_000
+    llm_max_output_tokens: int = 2048
+    llm_max_response_bytes: int = 256_000
+    llm_run_cap_eur: Decimal = Decimal("0.20")
+    llm_monthly_cap_eur: Decimal = Decimal("1")
+    llm_prices_eur_per_mtok: dict[str, ModelPrice] = DEFAULT_LLM_PRICES
+    llm_retry_base_seconds: float = 1.0
+    llm_retry_cap_seconds: float = 30.0
+    llm_retry_attempts_429: int = 6
+    llm_retry_attempts_5xx: int = 4
+    llm_max_retry_wait_seconds: float = 60.0
 
 
 @lru_cache
