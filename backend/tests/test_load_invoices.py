@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import Engine, text
 from tests.conftest import PipelineDb
 
+from generator.documents.contacts import vendor_contact
 from generator.documents.model import (
     CreditNote,
     Invoice,
@@ -84,6 +85,7 @@ def platform_invoice(number: str = "M-1", amount: str = "100.00", **changes: Any
         vat_rate=Decimal("0.21"),
         vat=vat,
         total=subtotal + vat,
+        contact=vendor_contact(1, "Meta"),
     )
     return replace(invoice, **changes)
 

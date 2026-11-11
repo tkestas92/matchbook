@@ -16,6 +16,14 @@ from generator.documents.config import (
     load_documents_config,
     parse_documents_config,
 )
+from generator.documents.contacts import (
+    FAKE_BANK_CODE,
+    PHONE_PREFIX,
+    grouped_iban,
+    iban_check_digits,
+    iban_is_valid,
+    vendor_contact,
+)
 from generator.documents.excel import HEADER_ROW, PLAN_HEADERS
 from generator.documents.pdf import format_amount
 from generator.documents.writer import (
@@ -302,6 +310,53 @@ def test_pdf_text_contains_number_and_total(out_dir: Path) -> None:
         assert format_amount(layout, Decimal(truth["total"])) in text, truth_path
         seen_layouts.add(layout)
     assert seen_layouts == {"meta", "google", "tiktok", "agency"}
+
+
+# --- synthetic contact details (PII for masking tests, decision 037) ----------------------
+
+
+def test_iban_check_digits_follow_iso_13616() -> None:
+    assert iban_check_digits("GB", "WEST12345698765432") == "82"  # the ISO 13616 example
+    assert iban_is_valid("GB82 WEST 1234 5698 7654 32")
+    assert not iban_is_valid("GB83 WEST 1234 5698 7654 32")
+
+
+def test_contacts_are_synthetic_and_valid(documents: Documents) -> None:
+    invoices = (*documents.platform_invoices, *documents.client_invoices)
+    for invoice in invoices:
+        contact = invoice.contact
+        assert iban_is_valid(contact.iban)
+        assert len(contact.iban) == 20
+        assert contact.iban.startswith("LT") and contact.iban[4:9] == FAKE_BANK_CODE
+        assert contact.email.startswith("billing@") and contact.email.endswith(".example")
+        assert contact.phone.startswith(PHONE_PREFIX)
+        assert len(contact.phone) == len(PHONE_PREFIX) + 3
+    assert len({i.contact for i in invoices}) == len({i.vendor for i in invoices})
+
+
+def test_contacts_are_deterministic_per_seed_and_vendor(config: Config) -> None:
+    assert vendor_contact(config.seed, "Meta") == vendor_contact(config.seed, "Meta")
+    assert vendor_contact(config.seed, "Meta") != vendor_contact(config.seed, "Google")
+    assert vendor_contact(config.seed, "Meta") != vendor_contact(config.seed + 1, "Meta")
+
+
+def test_pdfs_show_the_contact_details(out_dir: Path, documents: Documents) -> None:
+    for invoice in (*documents.platform_invoices, *documents.client_invoices):
+        path = out_dir / invoice_dir(invoice) / f"{invoice.number}.pdf"
+        text = "\n".join(page.extract_text() for page in PdfReader(path).pages)
+        assert grouped_iban(invoice.contact.iban) in text, path
+        assert invoice.contact.email in text, path
+        assert invoice.contact.phone in text, path
+
+
+def test_ground_truth_holds_no_contact_details(out_dir: Path, documents: Documents) -> None:
+    """Data minimization: extraction never needs PII, so the ground truth never carries it."""
+    for invoice in (*documents.platform_invoices, *documents.client_invoices):
+        path = out_dir / invoice_dir(invoice) / f"{invoice.number}.json"
+        raw = path.read_text(encoding="utf-8")
+        assert not {"iban", "email", "phone", "contact"} & set(load_json(path))
+        for value in (invoice.contact.iban, invoice.contact.email, invoice.contact.phone):
+            assert value not in raw, path
 
 
 def test_media_plan_round_trips_insertion_orders(world: World, out_dir: Path) -> None:

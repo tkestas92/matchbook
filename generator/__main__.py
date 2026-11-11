@@ -27,6 +27,7 @@ def main() -> None:
         f"platform_invoices={len(planted.documents.platform_invoices)} "
         f"client_invoices={len(planted.documents.client_invoices)} "
         f"credit_notes={len(planted.documents.credit_notes)} "
+        f"inbox={len(planted.malicious)} "
         f"delivery_rows={len(planted.delivery)} -> {DEFAULT_OUTPUT_DIR}"
     )
     print(

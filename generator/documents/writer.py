@@ -1,9 +1,13 @@
-"""Write all documents for a world to disk, with a manifest of content hashes."""
+"""Write all documents for a world to disk, with a manifest of content hashes.
+
+`inbox/` holds documents the stage-1 loader never reads (it reads only `invoices/` and
+`credit_notes/`): the prompt-injection copies of error #10 (decision 037).
+"""
 
 import hashlib
 import json
 import shutil
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +20,7 @@ from generator.documents.model import (
     credit_note_ground_truth,
     invoice_ground_truth,
 )
-from generator.documents.pdf import render_credit_note, render_invoice
+from generator.documents.pdf import Decorator, render_credit_note, render_invoice
 from generator.world import World
 
 MANIFEST_NAME = "manifest.json"
@@ -28,6 +32,12 @@ def invoice_dir(invoice: Invoice) -> Path:
     if invoice.kind == "platform":
         return Path("invoices", "platform", invoice.platform_key or "", month)
     return Path("invoices", "client", invoice.client_code, month)
+
+
+def inbox_dir(invoice: Invoice) -> Path:
+    return Path(
+        "inbox", invoice.platform_key or invoice.client_code, f"{invoice.period_start:%Y-%m}"
+    )
 
 
 def credit_note_dir(note: CreditNote) -> Path:
@@ -51,8 +61,10 @@ def write_outputs(
     config: DocumentsConfig,
     out_dir: Path,
     extra_json: Mapping[Path, Any] | None = None,
+    inbox: Sequence[tuple[Invoice, Decorator]] = (),
 ) -> None:
-    """Replace `out_dir` with `documents` plus extra JSON files (relative paths), and a manifest."""
+    """Replace `out_dir` with `documents`, decorated `inbox` invoices, extra JSON files
+    (relative paths) and a manifest."""
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
@@ -61,6 +73,10 @@ def write_outputs(
     for invoice in (*documents.platform_invoices, *documents.client_invoices):
         base = ensure_parent(out_dir / invoice_dir(invoice) / invoice.number)
         render_invoice(invoice, base.with_suffix(".pdf"), config.agency.vat_code)
+        write_json(base.with_suffix(".json"), invoice_ground_truth(invoice))
+    for invoice, decorate in inbox:
+        base = ensure_parent(out_dir / inbox_dir(invoice) / invoice.number)
+        render_invoice(invoice, base.with_suffix(".pdf"), config.agency.vat_code, decorate)
         write_json(base.with_suffix(".json"), invoice_ground_truth(invoice))
     for note in documents.credit_notes:
         base = ensure_parent(out_dir / credit_note_dir(note) / note.number)

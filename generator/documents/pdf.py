@@ -3,6 +3,10 @@
 Layouts differ on purpose (headers, column order, number formats, wording) so that later
 extraction has to cope with variety. `invariant=1` makes reportlab drop timestamps and
 random document IDs, so the same document always renders to the same bytes.
+
+Invoices print the vendor's synthetic email and phone under the header and the IBAN in the
+footer (decision 037). A `decorate` callback can draw extra content on the page before it is
+finished; error #10 uses it for prompt-injection payloads.
 """
 
 from collections.abc import Callable
@@ -16,6 +20,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen.canvas import Canvas
 
+from generator.documents.contacts import VendorContact, grouped_iban
 from generator.documents.model import CreditNote, Invoice
 
 FONTS_DIR = Path(__file__).resolve().parent.parent / "fonts"
@@ -24,6 +29,8 @@ PAGE_WIDTH, PAGE_HEIGHT = A4
 MARGIN = 50
 FOOTER = "Synthetic test document — Matchbook generator. Not a real invoice."
 ROW_HEIGHT = 16
+
+Decorator = Callable[[Canvas], None]
 
 
 def register_fonts() -> None:
@@ -83,12 +90,13 @@ class Column:
 
 
 class Page:
-    def __init__(self, path: Path, title: str) -> None:
+    def __init__(self, path: Path, title: str, decorate: Decorator | None = None) -> None:
         register_fonts()
         self.canvas = Canvas(str(path), pagesize=A4, invariant=1)
         self.canvas.setTitle(title)
         self.canvas.setAuthor("Matchbook generator")
         self.y = PAGE_HEIGHT - MARGIN
+        self.decorate = decorate
 
     def text(self, value: str, x: float = MARGIN, size: int = 9, bold: bool = False) -> None:
         self.canvas.setFont(FONT_BOLD if bold else FONT, size)
@@ -130,9 +138,19 @@ class Page:
         else:
             self.text(value, column.x, bold=bold)
 
-    def save(self) -> None:
+    def contact(self, contact: VendorContact, x: float = MARGIN) -> None:
+        self.text(f"{contact.email} · {contact.phone}", x, size=8)
+        self.line_break(14)
+
+    def save(self, pay_to: VendorContact | None = None) -> None:
         self.canvas.setFont(FONT, 7)
+        if pay_to is not None:
+            self.canvas.drawString(
+                MARGIN, MARGIN / 2 + 10, f"Pay to IBAN {grouped_iban(pay_to.iban)}"
+            )
         self.canvas.drawString(MARGIN, MARGIN / 2, FOOTER)
+        if self.decorate is not None:
+            self.decorate(self.canvas)
         self.canvas.showPage()
         self.canvas.save()
 
@@ -147,12 +165,13 @@ def long_date(value: date) -> str:
 # --- platform layouts ---------------------------------------------------------------------
 
 
-def render_meta(invoice: Invoice, path: Path) -> None:
+def render_meta(invoice: Invoice, path: Path, decorate: Decorator | None = None) -> None:
     fmt = format_meta
-    page = Page(path, f"Receipt {invoice.number}")
+    page = Page(path, f"Receipt {invoice.number}", decorate)
     page.text(f"{invoice.vendor} Ads", size=16, bold=True)
     page.right("Receipt / Invoice", RIGHT_EDGE, size=14, bold=True)
-    page.line_break(30)
+    page.line_break(16)
+    page.contact(invoice.contact)
     page.pairs(
         [
             ("Invoice #", invoice.number),
@@ -185,15 +204,16 @@ def render_meta(invoice: Invoice, path: Path) -> None:
         page.line_break()
     page.line_break()
     page.text(f"All amounts in {invoice.currency}.", size=8)
-    page.save()
+    page.save(invoice.contact)
 
 
-def render_google(invoice: Invoice, path: Path) -> None:
+def render_google(invoice: Invoice, path: Path, decorate: Decorator | None = None) -> None:
     fmt = format_google
-    page = Page(path, f"Invoice {invoice.number}")
+    page = Page(path, f"Invoice {invoice.number}", decorate)
     page.text("Invoice", size=18, bold=True)
     page.right(invoice.vendor, RIGHT_EDGE, size=12, bold=True)
-    page.line_break(28)
+    page.line_break(16)
+    page.contact(invoice.contact)
     # Summary box first, details after: Google-style.
     page.canvas.rect(MARGIN, page.y - 52, PAGE_WIDTH - 2 * MARGIN, 66)
     page.text("Total amount due", MARGIN + 10, size=10, bold=True)
@@ -230,16 +250,17 @@ def render_google(invoice: Invoice, path: Path) -> None:
         page.right(label, 420, bold=label.startswith("Total"))
         page.right(fmt(value), RIGHT_EDGE, bold=label.startswith("Total"))
         page.line_break()
-    page.save()
+    page.save(invoice.contact)
 
 
-def render_tiktok(invoice: Invoice, path: Path) -> None:
+def render_tiktok(invoice: Invoice, path: Path, decorate: Decorator | None = None) -> None:
     fmt = format_tiktok
-    page = Page(path, f"Tax invoice {invoice.number}")
+    page = Page(path, f"Tax invoice {invoice.number}", decorate)
     page.text("TAX INVOICE", size=16, bold=True)
     page.line_break(14)
     page.text(f"{invoice.vendor} For Business", size=10)
-    page.line_break(28)
+    page.line_break(14)
+    page.contact(invoice.contact)
     page.pairs(
         [
             ("Invoice No.:", invoice.number),
@@ -265,20 +286,23 @@ def render_tiktok(invoice: Invoice, path: Path) -> None:
         page.text(label, MARGIN, bold=label == "Amount Due:")
         page.right(fmt(value), 220, bold=label == "Amount Due:")
         page.line_break()
-    page.save()
+    page.save(invoice.contact)
 
 
 # --- agency documents ---------------------------------------------------------------------
 
 
-def render_agency(invoice: Invoice, path: Path, agency_vat_code: str) -> None:
+def render_agency(
+    invoice: Invoice, path: Path, agency_vat_code: str, decorate: Decorator | None = None
+) -> None:
     fmt = format_agency
-    page = Page(path, f"Invoice {invoice.number}")
+    page = Page(path, f"Invoice {invoice.number}", decorate)
     page.text(invoice.vendor, size=14, bold=True)
     page.right("VAT INVOICE", RIGHT_EDGE, size=14, bold=True)
     page.line_break(14)
     page.text(f"VAT code {agency_vat_code}", size=8)
-    page.line_break(28)
+    page.line_break(14)
+    page.contact(invoice.contact)
     page.pairs(
         [
             ("Invoice no.", invoice.number),
@@ -301,7 +325,7 @@ def render_agency(invoice: Invoice, path: Path, agency_vat_code: str) -> None:
         page.right(label, 420, bold=label == "Total due")
         page.right(fmt(value), RIGHT_EDGE, bold=label == "Total due")
         page.line_break()
-    page.save()
+    page.save(invoice.contact)
 
 
 def render_credit_note(note: CreditNote, path: Path) -> None:
@@ -343,15 +367,17 @@ def account_dashes(account_id: str) -> str:
     return f"{account_id[:3]}-{account_id[3:6]}-{account_id[6:]}"
 
 
-PLATFORM_RENDERERS: dict[str, Callable[[Invoice, Path], None]] = {
+PLATFORM_RENDERERS: dict[str, Callable[[Invoice, Path, Decorator | None], None]] = {
     "meta": render_meta,
     "google": render_google,
     "tiktok": render_tiktok,
 }
 
 
-def render_invoice(invoice: Invoice, path: Path, agency_vat_code: str) -> None:
+def render_invoice(
+    invoice: Invoice, path: Path, agency_vat_code: str, decorate: Decorator | None = None
+) -> None:
     if invoice.layout == "agency":
-        render_agency(invoice, path, agency_vat_code)
+        render_agency(invoice, path, agency_vat_code, decorate)
     else:
-        PLATFORM_RENDERERS[invoice.layout](invoice, path)
+        PLATFORM_RENDERERS[invoice.layout](invoice, path, decorate)
