@@ -36,7 +36,9 @@ from pipelines.run import (
     RunOutcome,
     check_ingest_reachable,
     execute,
+    print_outcome,
     run_status,
+    summary_counts,
 )
 
 TOKEN = "test-token"
@@ -50,6 +52,18 @@ CONFIRMED_ORDER = [
     "reconcile",
     "pacing",
 ]
+PACING_COUNTS = {
+    "as_of": "2026-10-31",
+    "orders_paced": 114,
+    "orders_skipped": 0,
+    "statuses": {"green": 104, "yellow": 10},
+    "issues_written": 6,
+    "quality_issues_taken_over": 6,
+}
+PACING_SUMMARY = (
+    "as_of=2026-10-31 orders_paced=114 orders_skipped=0 "
+    "statuses={'green': 104, 'yellow': 10} issues_written=6 quality_issues_taken_over=6"
+)
 COUNTED_TABLES = (
     "raw.meta_responses",
     "raw.google_responses",
@@ -139,6 +153,17 @@ def test_quality_needs_the_normalize_result_of_the_same_run() -> None:
     )
     with pytest.raises(RuntimeError, match="normalize result"):
         runner.step_quality(ctx)
+
+
+def test_pacing_summary_separates_every_count() -> None:
+    assert summary_counts(PACING_COUNTS) == PACING_SUMMARY
+
+
+def test_print_outcome_prints_the_pacing_line(capsys: pytest.CaptureFixture[str]) -> None:
+    pacing = {"name": "pacing", "status": SUCCEEDED, "duration_s": 0.5, "counts": PACING_COUNTS}
+    print_outcome(RunOutcome(uuid.uuid4(), status=SUCCEEDED, steps=[pacing]))
+    first_line = capsys.readouterr().out.splitlines()[0]
+    assert first_line == f"pacing         succeeded    0.500s  {PACING_SUMMARY}"
 
 
 # --- End to end (Postgres) ---
