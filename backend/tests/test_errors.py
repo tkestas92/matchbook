@@ -1,4 +1,6 @@
 import json
+import re
+import uuid
 from collections import Counter, defaultdict
 from dataclasses import replace
 from datetime import date
@@ -11,14 +13,17 @@ from pypdf import PdfReader
 
 from generator.documents.billing import Documents, build_documents, fee_line
 from generator.documents.config import DocumentsConfig, load_documents_config
+from generator.documents.injection import INJECTION_VARIANTS, PAYLOADS
 from generator.documents.model import Invoice, invoice_ground_truth
-from generator.documents.pdf import format_amount
-from generator.documents.writer import MANIFEST_NAME, generate_documents, invoice_dir
+from generator.documents.pdf import PAGE_WIDTH, format_amount
+from generator.documents.writer import MANIFEST_NAME, generate_documents, inbox_dir, invoice_dir
 from generator.errors import (
     ANSWER_KEY_PATH,
     DEFAULT_MIN_PER_TYPE,
     ERROR_TYPES,
+    PROMPT_INJECTION,
     REFERENCE_PATH,
+    Allocation,
     AnswerKeyEntry,
     ErrorsConfig,
     PlantedOutput,
@@ -40,6 +45,15 @@ from generator.world import (
     month_end,
     next_month,
     world_digest,
+)
+from pipelines.load_invoices import (
+    CREDIT_NOTES_DIR,
+    INVOICES_DIR,
+    LoadInvoicesResult,
+    Registry,
+    collect,
+    parse_credit_note,
+    parse_invoice,
 )
 
 
@@ -129,6 +143,15 @@ def pdf_text(path: Path) -> str:
     return "\n".join(page.extract_text() for page in PdfReader(path).pages)
 
 
+def without_injection(config: ErrorsConfig) -> ErrorsConfig:
+    return replace(config, prompt_injection_variants=())
+
+
+def stage1_entries(planted: PlantedOutput) -> list[AnswerKeyEntry]:
+    """Entries of the errors whose documents the stage-1 loader reads (all but #10)."""
+    return [e for e in planted.answer_key if e.error_type != PROMPT_INJECTION.slug]
+
+
 # --- planted and recorded -----------------------------------------------------------------
 
 
@@ -143,9 +166,12 @@ def test_every_error_type_is_planted(planted: PlantedOutput, errors_config: Erro
 def test_counts_follow_the_formula(planted: PlantedOutput, errors_config: ErrorsConfig) -> None:
     counts = Counter(e.error_type for e in planted.answer_key)
     for a in planted.allocations:
-        expected = error_count(
-            errors_config.error_rate, errors_config.min_per_type, a.candidates, a.available
-        )
+        if a.error_type == PROMPT_INJECTION.slug:  # one per variant, not the rate formula
+            expected = len(errors_config.prompt_injection_variants)
+        else:
+            expected = error_count(
+                errors_config.error_rate, errors_config.min_per_type, a.candidates, a.available
+            )
         assert a.planted == expected == counts[a.error_type], a
 
 
@@ -163,7 +189,7 @@ def test_changed_artifacts_match_the_answer_key(
     clean_platform = by_number(clean.platform_invoices)
     planted_platform = by_number(planted.documents.platform_invoices)
     refs = defaultdict(set)
-    for e in planted.answer_key:
+    for e in stage1_entries(planted):
         refs[e.entity_type].add(e.entity_ref)
 
     changed_platform = {
@@ -182,6 +208,10 @@ def test_changed_artifacts_match_the_answer_key(
     assert planted.documents.credit_notes == clean.credit_notes
 
     assert changed_campaigns(world, planted) == refs["campaign"]
+
+    malicious = {m.invoice.number for m in planted.malicious}
+    assert malicious == {e.entity_ref for e in entries_of(planted, PROMPT_INJECTION.slug)}
+    assert malicious.isdisjoint(planted_platform)
 
 
 def test_answer_key_fields(planted: PlantedOutput) -> None:
@@ -370,9 +400,10 @@ def test_no_errors_gives_the_clean_output(
     errors_config: ErrorsConfig,
     tmp_path: Path,
 ) -> None:
-    none = replace(errors_config, error_rate=Decimal(0), min_per_type=0)
+    none = without_injection(replace(errors_config, error_rate=Decimal(0), min_per_type=0))
     result = generate_with_errors(world, clean, docs_config, none, tmp_path / "planted")
     assert result.answer_key == ()
+    assert result.malicious == ()
     assert result.documents == clean
     assert [(d.date, d.spend, d.clicks) for d in result.delivery] == [
         (d.date, d.spend, d.clicks) for d in world.delivery
@@ -396,6 +427,7 @@ def test_same_seed_gives_identical_files(output_dirs: tuple[Path, Path]) -> None
     first, second = (load_json(d / MANIFEST_NAME) for d in output_dirs)
     assert first == second
     assert ANSWER_KEY_PATH.as_posix() in first["files"]
+    assert any(path.startswith("inbox/") for path in first["files"])
 
 
 def test_different_seed_gives_different_errors(
@@ -434,7 +466,7 @@ def test_changed_invoices_on_disk_are_consistent(
         if clean_numbers.get(i.number) != i
     ]
     assert len(touched) == sum(
-        e.entity_type in {"platform_invoice", "client_invoice"} for e in planted.answer_key
+        e.entity_type in {"platform_invoice", "client_invoice"} for e in stage1_entries(planted)
     )
     for invoice in touched:
         base = out_dir / invoice_dir(invoice) / invoice.number
@@ -464,6 +496,150 @@ def test_delivery_files_hold_the_reported_rows(
             day.campaign_name,
         )
     assert isinstance(planted.delivery[0], ReportedDay)
+
+
+# --- prompt-injection invoices (#10) --------------------------------------------------------
+
+
+def test_every_injection_variant_is_planted_once(
+    planted: PlantedOutput, errors_config: ErrorsConfig
+) -> None:
+    assert errors_config.prompt_injection_variants == tuple(INJECTION_VARIANTS)
+    assert sorted(m.variant for m in planted.malicious) == sorted(INJECTION_VARIANTS)
+    entries = entries_of(planted, PROMPT_INJECTION.slug)
+    assert sorted(e.details["variant"] for e in entries) == sorted(INJECTION_VARIANTS)
+    for e in entries:
+        assert (e.error_no, e.entity_type) == (10, "platform_invoice")
+        assert (e.expected_detector, e.detectable_in_stage) == ("extraction_security", 2)
+
+
+def test_injection_does_not_change_stage1_errors(
+    world: World, clean: Documents, errors_config: ErrorsConfig, planted: PlantedOutput
+) -> None:
+    """#10 is planted last, so #1-#9 and every stage-1 document stay exactly the same."""
+    without = plant_errors(world, clean, without_injection(errors_config))
+    assert stage1_entries(planted) == list(without.answer_key)
+    assert planted.documents == without.documents
+    assert planted.delivery == without.delivery
+    assert stage1_allocations(planted) == stage1_allocations(without)
+
+
+def stage1_allocations(planted: PlantedOutput) -> list[Allocation]:
+    return [a for a in planted.allocations if a.error_type != PROMPT_INJECTION.slug]
+
+
+def test_malicious_copy_shows_the_original_values(
+    clean: Documents, planted: PlantedOutput, out_dir: Path
+) -> None:
+    originals = by_number(clean.platform_invoices)
+    copies = {m.invoice.number: m.invoice for m in planted.malicious}
+    for entry in entries_of(planted, PROMPT_INJECTION.slug):
+        original, copy = originals[entry.details["original_number"]], copies[entry.entity_ref]
+        assert replace(copy, number=original.number) == original
+        assert entry.magnitude == original.subtotal
+        base = out_dir / inbox_dir(copy) / copy.number
+        assert load_json(base.with_suffix(".json")) == {
+            **invoice_ground_truth(original),
+            "number": copy.number,
+        }
+        text = pdf_text(base.with_suffix(".pdf"))
+        assert copy.number in text
+        for amount in (original.subtotal, original.vat, original.total):
+            assert format_amount(original.layout, amount) in text
+
+
+def test_inbox_holds_exactly_the_malicious_copies(planted: PlantedOutput, out_dir: Path) -> None:
+    on_disk = sorted(path.stem for path in (out_dir / "inbox").rglob("*.json"))
+    assert on_disk == sorted(m.invoice.number for m in planted.malicious)
+    assert len(list((out_dir / "inbox").rglob("*.pdf"))) == len(on_disk)
+
+
+def payload_runs(path: Path, variant: str) -> list[tuple[float, float]]:
+    """(x, font size) of every text run on the first page that starts the variant's payload."""
+    first_line = PAYLOADS[variant][0]
+    runs: list[tuple[float, float]] = []
+
+    def visit(text: str, cm: list, tm: list, font: object, size: float) -> None:
+        if first_line[:20] in text:
+            runs.append((tm[4], size))
+
+    PdfReader(path).pages[0].extract_text(visitor_text=visit)
+    return runs
+
+
+def test_each_payload_is_hidden_or_shown_as_its_variant_says(
+    planted: PlantedOutput, out_dir: Path
+) -> None:
+    for malicious in planted.malicious:
+        invoice = malicious.invoice
+        path = (out_dir / inbox_dir(invoice) / invoice.number).with_suffix(".pdf")
+        reader = PdfReader(path)
+        runs = payload_runs(path, malicious.variant)
+        match malicious.variant:
+            case "white_text":
+                assert runs
+                assert b"1 1 1 rg" in reader.pages[0].get_contents().get_data()
+            case "tiny_font":
+                assert runs and all(size < 2 for _, size in runs)
+            case "outside_page":
+                assert runs and all(x > PAGE_WIDTH for x, _ in runs)
+            case "metadata":
+                assert not runs
+                assert PAYLOADS["metadata"][0] in reader.metadata.subject
+                assert PAYLOADS["metadata"][0] in reader.metadata["/Keywords"]
+            case _:
+                text = pdf_text(path)
+                assert all(line.strip() in text for line in PAYLOADS[malicious.variant])
+
+
+def test_stage1_documents_carry_no_payload(out_dir: Path) -> None:
+    payload_lines = {line.strip() for lines in PAYLOADS.values() for line in lines}
+    payload_lines -= {"{", "}"}
+    for path in (
+        *(out_dir / "invoices").rglob("*.pdf"),
+        *(out_dir / "credit_notes").rglob("*.pdf"),
+    ):
+        reader = PdfReader(path)
+        text = pdf_text(path)
+        assert not any(line in text for line in payload_lines), path
+        assert b"1 1 1 rg" not in reader.pages[0].get_contents().get_data()
+        assert reader.metadata.subject == "unspecified"
+
+
+def test_payload_urls_use_only_example_invalid() -> None:
+    hosts = {
+        host
+        for lines in PAYLOADS.values()
+        for line in lines
+        for host in re.findall(r"https?://([^/\s]+)", line)
+    }
+    assert hosts == {"example.invalid"}
+
+
+def test_stage1_loader_reads_only_the_normal_documents(
+    planted: PlantedOutput, out_dir: Path
+) -> None:
+    """The stage-1 loader's own folder walk and parsers, without a database (decision 037)."""
+    reference = load_json(out_dir / REFERENCE_PATH)
+    registry = Registry(
+        clients={c["code"]: i for i, c in enumerate(reference["clients"], start=1)},
+        platforms={p["name"]: i for i, p in enumerate(reference["platforms"], start=1)},
+    )
+    result = LoadInvoicesResult(run_id=uuid.uuid4())
+    invoices = collect(
+        result,
+        out_dir,
+        INVOICES_DIR,
+        lambda payload, relative: parse_invoice(payload, relative, registry),
+    )
+    notes = collect(result, out_dir, CREDIT_NOTES_DIR, parse_credit_note)
+    assert result.rejected == []
+    documents = planted.documents
+    assert sorted(i.number for i in invoices) == sorted(
+        i.number for i in (*documents.platform_invoices, *documents.client_invoices)
+    )
+    assert sorted(n.number for n in notes) == sorted(n.number for n in documents.credit_notes)
+    assert {i.number for i in invoices}.isdisjoint(m.invoice.number for m in planted.malicious)
 
 
 # --- count formula and config ---------------------------------------------------------------
@@ -540,6 +716,9 @@ def test_errors_config_parses_decimals(errors_config: ErrorsConfig) -> None:
         (("errors", "campaign_renamed", "from_day", "max"), 30),
         (("errors", "duplicate_invoice", "delay_days", "min"), 0),
         (("error_rate",), 1.5),
+        (("errors", "prompt_injection", "variants"), ["white_text", "unknown"]),
+        (("errors", "prompt_injection", "variants"), ["metadata", "metadata"]),
+        (("errors", "prompt_injection", "variants"), "white_text"),
     ],
 )
 def test_invalid_errors_config_is_rejected(raw_config: dict, path: tuple, value: object) -> None:

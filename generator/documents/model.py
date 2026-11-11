@@ -1,12 +1,15 @@
 """Document records and their ground-truth JSON form.
 
 Ground truth stores money as strings ("1234.56") so it parses back to the exact Decimal.
+The vendor's contact details are printed on the PDF but never written to the ground truth.
 """
 
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from typing import Any
+
+from generator.documents.contacts import VendorContact
 
 CURRENCY = "EUR"
 
@@ -38,6 +41,7 @@ class Invoice:
     vat_rate: Decimal
     vat: Decimal
     total: Decimal
+    contact: VendorContact
     currency: str = CURRENCY
 
 

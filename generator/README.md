@@ -82,6 +82,11 @@ data/generated/
   applied on the same period's client invoice.
 - **Ground truth**: a JSON next to every PDF (vendor, number, dates, period, lines with
   `campaign_ref`, subtotal, VAT 21% `ROUND_HALF_UP`, total). Money is a string for exact `Decimal`.
+- **Synthetic PII** (`contacts.py`, decision 037): every invoice shows the vendor's email and phone
+  under the header and an IBAN in the footer, so masking (task 2.3) has something to find. The
+  IBAN is `LT` with the unused bank code `99999` and valid mod-97 check digits. The email is
+  `billing@<vendor>.example`, and the phone is in Ofcom's drama range `+44 20 7946 0xxx`. None of
+  them goes into the ground truth.
 - English only for now. Same seed → identical files (decision 024).
 - `python -m generator.documents` writes the clean documents only; `make generate` adds the errors below.
 - Fonts: DejaVu Sans (`generator/fonts/`, see `LICENSE-DejaVu.txt`) for Lithuanian letters.
@@ -99,6 +104,7 @@ It writes the documents (with errors) plus:
 ```
 data/generated/
   delivery/<platform>/<account_id>.json   # what the platform API reports (mock APIs serve it)
+  inbox/<platform>/<yyyy-mm>/<number>.pdf|.json  # #10 prompt-injection copies; stage 1 never reads it
   answer_key.json                         # one record per planted error — evals only
   reference.json                          # clients, platforms, ad accounts — the agency's registry
 ```
@@ -114,10 +120,19 @@ data/generated/
 | 7 | pacing drift | month's spend delivered in the first 60% of days | peak overpacing |
 | 8 | CPC spike | clicks ÷ 1.8 for 3 days, same spend | spend × (1 − 1/1.8) |
 | 9 | missing days | 1–3 consecutive days absent from the API | omitted spend |
+| 10 | prompt injection | copy of a platform invoice, new number, payload, in `inbox/` | its subtotal |
 
 Count per type = `max(errors.min_per_type, round(error_rate × candidates))`, capped at the
 candidates still available. Each client × platform × month carries at most one error. Settings
-live in the `errors:` block of `config.yaml`. Error #10 (prompt injection) comes in stage 2.
+live in the `errors:` block of `config.yaml`.
+
+#10 is different (decision 037). It plants one copy per variant in
+`errors.prompt_injection.variants`: white text, 1 pt font, text outside the page, PDF metadata,
+a visible "note to the AI", a fake JSON block, and an instruction to change the total or approve
+the invoice. The copy shows the original's values, so its ground truth is the visible values. It
+is planted last, so #1–#9 do not change, and it is written to `inbox/`, which the stage-1 loader
+(`invoices/` and `credit_notes/` only) and the demo never read. Payloads are inert strings, and the
+only URL host is `example.invalid`.
 Application code must never read `answer_key.json`; it reaches `eval.answer_key` only through
 the eval loader (task 1.11).
 

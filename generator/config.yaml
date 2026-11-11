@@ -11,7 +11,7 @@ months:
 # Share of candidates per error type that get a planted error (generator/errors.py).
 error_rate: 0.05
 
-# Planted errors #1-#9 (docs/plan.md §5.2, decision 025).
+# Planted errors #1-#10 (docs/plan.md §5.2, decisions 025 and 037).
 # Count per type = max(min_per_type, round(error_rate × candidates)), capped at the candidates
 # still available (each client × platform × month carries at most one error).
 errors:
@@ -31,6 +31,15 @@ errors:
     days: 3
   missing_days:             # 9: consecutive mid-month days absent from the API
     days: {min: 1, max: 3}
+  prompt_injection:         # 10: copies of platform invoices with a payload, one per variant,
+    variants:               #     written to inbox/ (never read by stage 1, decision 037)
+      - white_text
+      - tiny_font
+      - outside_page
+      - metadata
+      - visible_note
+      - fake_json
+      - change_total
 
 platforms:
   meta:

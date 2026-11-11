@@ -1,12 +1,16 @@
-"""Plant errors #1-#9 into the clean output (docs/plan.md §5.1 step 3, §5.2).
+"""Plant errors #1-#10 into the clean output (docs/plan.md §5.1 step 3, §5.2).
 
 A separate pass: the true world and the clean documents are never mutated; planted copies are
 returned instead. Every planted error is recorded exactly once in the answer key, written to
 data/generated/answer_key.json. Only the eval loader (run as the DB owner) puts it into
-eval.answer_key (decision 025). Error #10 (prompt injection) comes in stage 2.
+eval.answer_key (decision 025).
 
 Each error claims (client, platform, month) slots so no entity carries two errors and the
 answer key stays unambiguous.
+
+Error #10 (prompt injection) adds copies of real platform invoices with a payload. They are
+not part of `documents`: the writer puts them in `inbox/`, which the stage-1 loader never
+reads, and #10 is planted last so #1-#9 do not change (decision 037).
 """
 
 import random
@@ -22,6 +26,7 @@ import yaml
 
 from generator.documents.billing import Documents, fee_line, vat_and_total
 from generator.documents.config import DocumentsConfig
+from generator.documents.injection import INJECTION_VARIANTS
 from generator.documents.model import CURRENCY, Invoice, InvoiceLine
 from generator.documents.numbering import PLATFORM_NUMBER_FORMATS
 from generator.documents.writer import write_outputs
@@ -75,6 +80,7 @@ class ErrorsConfig:
     cpc_multiplier: Decimal
     cpc_spike_days: int
     missing_days: IntRange
+    prompt_injection_variants: tuple[str, ...]
 
 
 def load_errors_config(path: Path = DEFAULT_CONFIG_PATH) -> ErrorsConfig:
@@ -94,6 +100,7 @@ def parse_errors_config(raw: dict[str, Any]) -> ErrorsConfig:
         cpc_multiplier=to_decimal(errors["cpc_spike"]["multiplier"]),
         cpc_spike_days=int(errors["cpc_spike"]["days"]),
         missing_days=int_range(errors["missing_days"]["days"]),
+        prompt_injection_variants=parse_variants(errors["prompt_injection"]["variants"]),
     )
     validate_errors_config(config)
     return config
@@ -103,6 +110,17 @@ def parse_min_per_type(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ConfigError("errors.min_per_type must be a non-negative integer")
     return value
+
+
+def parse_variants(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ConfigError("errors.prompt_injection.variants must be a list of names")
+    unknown = sorted(set(value) - set(INJECTION_VARIANTS))
+    if unknown:
+        raise ConfigError(f"errors.prompt_injection.variants: unknown {', '.join(unknown)}")
+    if len(set(value)) != len(value):
+        raise ConfigError("errors.prompt_injection.variants must not repeat a variant")
+    return tuple(value)
 
 
 def decimal_range(raw: dict[str, Any]) -> DecimalRange:
@@ -168,6 +186,7 @@ CREDIT_NOT_APPLIED = ErrorType(6, "credit_not_applied", "client_invoice", "recon
 PACING_DRIFT = ErrorType(7, "pacing_drift", "campaign", "pacing", 1)
 CPC_SPIKE = ErrorType(8, "cpc_spike", "campaign", "anomalies", 4)
 MISSING_DAYS = ErrorType(9, "missing_days", "campaign", "data_quality", 1)
+PROMPT_INJECTION = ErrorType(10, "prompt_injection", "platform_invoice", "extraction_security", 2)
 ERROR_TYPES = (
     INVOICE_ABOVE_DELIVERY,
     DUPLICATE_INVOICE,
@@ -178,6 +197,7 @@ ERROR_TYPES = (
     PACING_DRIFT,
     CPC_SPIKE,
     MISSING_DAYS,
+    PROMPT_INJECTION,
 )
 
 
@@ -223,11 +243,20 @@ class Allocation:
 
 
 @dataclass(frozen=True)
+class MaliciousInvoice:
+    """A copy of a real platform invoice with a prompt-injection payload (#10)."""
+
+    invoice: Invoice
+    variant: str
+
+
+@dataclass(frozen=True)
 class PlantedOutput:
-    documents: Documents
+    documents: Documents  # what the stage-1 loader reads; never the malicious copies
     delivery: tuple[ReportedDay, ...]
     answer_key: tuple[AnswerKeyEntry, ...]
     allocations: tuple[Allocation, ...]
+    malicious: tuple[MaliciousInvoice, ...]
 
 
 # --- the planting pass --------------------------------------------------------------------
@@ -251,6 +280,7 @@ class Workspace:
     client_invoices: dict[str, Invoice]
     delivery: dict[str, list[ReportedDay]]
     duplicates: dict[str, Invoice] = field(default_factory=dict)
+    malicious: list[MaliciousInvoice] = field(default_factory=list)
     claimed: set[Slot] = field(default_factory=set)
     entries: list[AnswerKeyEntry] = field(default_factory=list)
     allocations: list[Allocation] = field(default_factory=list)
@@ -302,6 +332,7 @@ def plant_errors(world: World, documents: Documents, config: ErrorsConfig) -> Pl
         plant_pacing_drift,
         plant_cpc_spike,
         plant_campaign_renamed,
+        plant_prompt_injection,  # last: it must not change the allocation of #1-#9
     ):
         planter(ws)
     return PlantedOutput(
@@ -318,6 +349,7 @@ def plant_errors(world: World, documents: Documents, config: ErrorsConfig) -> Pl
         delivery=tuple(day for c in world.campaigns for day in ws.delivery[c.campaign_ref]),
         answer_key=tuple(sorted(ws.entries, key=lambda e: (e.error_no, e.entity_ref))),
         allocations=tuple(sorted(ws.allocations, key=lambda a: a.error_type)),
+        malicious=tuple(sorted(ws.malicious, key=lambda m: m.invoice.number)),
     )
 
 
@@ -340,12 +372,21 @@ def clean_reported_delivery(world: World) -> dict[str, list[ReportedDay]]:
     return {ref: sorted(days, key=lambda d: d.date) for ref, days in rows.items()}
 
 
-def allocate(ws: Workspace, error: ErrorType, candidates: Iterable[Candidate]) -> list[Candidate]:
-    """Pick candidates one by one among those whose slots are all still free."""
+def allocate(
+    ws: Workspace, error: ErrorType, candidates: Iterable[Candidate], count: int | None = None
+) -> list[Candidate]:
+    """Pick candidates one by one among those whose slots are all still free.
+
+    Without `count`, the number follows `error_count`; a fixed `count` is capped at the
+    candidates available.
+    """
     pool = sorted(candidates, key=lambda c: c.key)
     free = [c for c in pool if is_free(ws, c)]
     available = len(free)
-    count = error_count(ws.config.error_rate, ws.config.min_per_type, len(pool), available)
+    if count is None:
+        count = error_count(ws.config.error_rate, ws.config.min_per_type, len(pool), available)
+    elif count > available:
+        raise ConfigError(f"only {available} free candidates for {count} {error.slug} errors")
     rng = ws.rng(error)
     chosen: list[Candidate] = []
     while len(chosen) < count and free:
@@ -500,18 +541,33 @@ def platform_invoice_candidates(ws: Workspace) -> list[Candidate]:
     ]
 
 
+def taken_numbers(ws: Workspace) -> set[str]:
+    return {
+        *ws.platform_invoices,
+        *ws.client_invoices,
+        *(i.number for i in ws.duplicates.values()),
+        *(m.invoice.number for m in ws.malicious),
+    }
+
+
+def new_number(rng: random.Random, original: Invoice, taken: set[str]) -> str:
+    """A number in the vendor's own format that no other document uses; added to `taken`."""
+    assert original.platform_key is not None and original.account_id is not None
+    number = original.number
+    while number in taken:
+        number = PLATFORM_NUMBER_FORMATS[original.platform_key](
+            rng, original.account_id, original.period_start
+        )
+    taken.add(number)
+    return number
+
+
 def plant_duplicate_invoice(ws: Workspace) -> None:
-    taken = {*ws.platform_invoices, *ws.client_invoices}
+    taken = taken_numbers(ws)
     for candidate in allocate(ws, DUPLICATE_INVOICE, platform_invoice_candidates(ws)):
         original: Invoice = candidate.item
-        assert original.platform_key is not None and original.account_id is not None
         rng = ws.rng(DUPLICATE_INVOICE, original.number)
-        number = original.number
-        while number in taken:
-            number = PLATFORM_NUMBER_FORMATS[original.platform_key](
-                rng, original.account_id, original.period_start
-            )
-        taken.add(number)
+        number = new_number(rng, original, taken)
         delay = timedelta(
             days=rng.randint(ws.config.duplicate_delay_days.min, ws.config.duplicate_delay_days.max)
         )
@@ -755,6 +811,40 @@ def plant_campaign_renamed(ws: Workspace) -> None:
         )
 
 
+# --- prompt-injection invoices (#10) ------------------------------------------------------
+
+
+def plant_prompt_injection(ws: Workspace) -> None:
+    """One copy of a real platform invoice per variant, with a new number and a payload.
+
+    The copy shows the original's values, so its ground truth is what a human reads. It claims
+    its slot like any error, so the original carries no other error.
+    """
+    variants = ws.config.prompt_injection_variants
+    taken = taken_numbers(ws)
+    chosen = allocate(ws, PROMPT_INJECTION, platform_invoice_candidates(ws), count=len(variants))
+    for variant, candidate in zip(variants, chosen, strict=True):
+        original: Invoice = candidate.item
+        number = new_number(ws.rng(PROMPT_INJECTION, original.number), original, taken)
+        copy = replace(original, number=number)
+        ws.malicious.append(MaliciousInvoice(copy, variant))
+        record(
+            ws,
+            PROMPT_INJECTION,
+            entity_ref=number,
+            client_code=original.client_code,
+            platform=original.platform_key,
+            month=original.period_start,
+            magnitude=copy.subtotal,
+            details={
+                "variant": variant,
+                "original_number": original.number,
+                "vendor": original.vendor,
+                "total": copy.total,
+            },
+        )
+
+
 # --- files --------------------------------------------------------------------------------
 
 
@@ -859,5 +949,6 @@ def generate_with_errors(
     """Plant errors into the clean documents and replace `out_dir` with the result."""
     planted = plant_errors(world, documents, config)
     files = planted_files(world, config, planted)
-    write_outputs(world, planted.documents, docs_config, out_dir, files)
+    inbox = [(m.invoice, INJECTION_VARIANTS[m.variant]) for m in planted.malicious]
+    write_outputs(world, planted.documents, docs_config, out_dir, files, inbox)
     return planted

@@ -13,6 +13,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from generator.documents.config import DocumentsConfig
+from generator.documents.contacts import VendorContact, vendor_contact
 from generator.documents.model import CreditNote, Invoice, InvoiceLine
 from generator.documents.numbering import (
     agency_invoice_number,
@@ -96,6 +97,7 @@ def build_platform_invoices(world: World, config: DocumentsConfig) -> tuple[Invo
                 kind="platform",
                 layout=platform_key,
                 vendor=platforms[platform_key].name,
+                contact=vendor_contact(world.seed, platforms[platform_key].name),
                 number=platform_invoice_number(
                     world.seed, platform_key, account.external_account_id, month
                 ),
@@ -117,6 +119,7 @@ def make_invoice(
     kind: str,
     layout: str,
     vendor: str,
+    contact: VendorContact,
     number: str,
     client_code: str,
     platform_key: str | None,
@@ -146,6 +149,7 @@ def make_invoice(
         vat_rate=config.vat_rate,
         vat=vat,
         total=total,
+        contact=contact,
     )
 
 
@@ -240,6 +244,7 @@ def build_client_invoices(
                 kind="client",
                 layout="agency",
                 vendor=config.agency.name,
+                contact=vendor_contact(world.seed, config.agency.name),
                 number=agency_invoice_number(config.agency.invoice_prefix, client_code, month),
                 client_code=client_code,
                 platform_key=None,
