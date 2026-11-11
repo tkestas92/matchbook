@@ -169,6 +169,7 @@ Write the results table to docs/eval-results.md.
 Add an Airflow DAG (docker compose profile, not part of default `make up`) that only calls the existing
 plain functions from pipelines/, one task per step, nightly schedule. No logic inside the DAG.
 ```
+**Status:** done — DAG `matchbook_nightly` (compose profile `airflow`, decision 034).
 
 ---
 
@@ -177,3 +178,5 @@ plain functions from pipelines/, one task per step, nightly schedule. No logic i
 
 Docker Compose on the home server, Cloudflare Tunnel to `demo-matchbook.kantrybes.lt`, read-only demo data.
 Plan this task separately once 1.11 is green.
+**Status:** done — read-only demo API (decision 035) and server deploy (decision 036, `docs/deploy-demo.md`);
+public demo at https://demo-matchbook.kantrybes.lt/docs behind a Cloudflare Tunnel with a Cloudflare rate limiting rule.
