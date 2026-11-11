@@ -186,7 +186,7 @@ Airflow (decision 034, `make airflow-up`, compose profile `airflow`, not part of
 
 Stage-1 eval (decision 033): `make generate` → `make eval-load-key` (owner) → `make pipeline` → `make eval-stage1`, which compares the latest run's open issues with `eval.answer_key` as `eval_runner`, writes `docs/eval-results.md` and exits non-zero on any missed rule-detectable error or more false alarms than allowed (default 0).
 
-Demo API (decision 035, `make demo-api`, 127.0.0.1): a separate read-only FastAPI app (`backend/app/demo/`) for the public stage-1 demo. GET only, as `demo_ro`: latest run status, open issues (summary and paginated list) and the counts-only stage-1 results from `docs/eval-results.md`. Deployment (compose profile `demo`, tunnel) is task 1.13b.
+Demo API (decision 035, `make demo-api`, 127.0.0.1): a separate read-only FastAPI app (`backend/app/demo/`) for the public stage-1 demo. GET only, as `demo_ro`: latest run status, open issues (summary and paginated list) and the counts-only stage-1 results from `docs/eval-results.md`. Deployment (decision 036, `docs/deploy-demo.md`): compose profile `demo` with its own Postgres (no published port), a one-shot `demo-init` that seeds synthetic data, and `demo-api` on 127.0.0.1:8200 behind the Cloudflare Tunnel (`demo-matchbook.kantrybes.lt`); rate limiting in Cloudflare.
 
 ## 8. Reconciliation rules (stage 1)
 Per client × platform × month:

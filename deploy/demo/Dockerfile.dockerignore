@@ -1,0 +1,22 @@
+# Build context for deploy/demo/Dockerfile (BuildKit reads <Dockerfile>.dockerignore).
+# Deny everything, allow only what the images copy, then re-exclude secrets and eval data.
+*
+!pyproject.toml
+!uv.lock
+!alembic.ini
+!backend/app
+!backend/migrations
+!pipelines
+!generator
+!mock_platforms
+!docs/eval-results.md
+!deploy/demo/init.sh
+
+**/__pycache__
+**/*.pyc
+**/.env
+**/.env.*
+**/answer_key.json
+backend/tests
+evals
+data

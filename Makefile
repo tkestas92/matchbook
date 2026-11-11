@@ -1,6 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help up down roles migrate test lint format generate mock-apis pipeline eval eval-load-key eval-stage1 \
-	airflow-up airflow-down airflow-password airflow-check demo-api
+	airflow-up airflow-down airflow-password airflow-check demo-api \
+	demo-check-env demo-init demo-up demo-down demo-logs
 
 help: ## List available targets
 	@grep -E '^[a-z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -68,3 +69,26 @@ DEMO_API_PORT ?= 8200
 
 demo-api: ## Serve the read-only demo API on 127.0.0.1:DEMO_API_PORT (logs in as demo_ro)
 	PYTHONPATH=backend uv run uvicorn app.demo.app:create_demo_app --factory --app-dir backend --host 127.0.0.1 --port $(DEMO_API_PORT)
+
+# Public demo on a server (compose profile `demo`, decision 036, docs/deploy-demo.md).
+# Services are always named: `--profile demo up` alone would also start `postgres`.
+DEMO_ENV_VARS := POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB ETL_DB_PASSWORD APP_DB_PASSWORD \
+	AGENT_RO_DB_PASSWORD EVAL_RUNNER_DB_PASSWORD DEMO_RO_DB_PASSWORD
+DEMO_SERVICES := demo-api demo-init demo-postgres
+
+demo-check-env:
+	@for var in $(DEMO_ENV_VARS); do \
+		grep -Eq "^$$var=.+" .env || { echo "Set $$var in .env (see docs/deploy-demo.md)"; exit 1; }; \
+	done
+
+demo-init: demo-check-env ## Demo: build and run the one-shot seeding job (roles, migrations, data, one pipeline run)
+	docker compose --profile demo run --rm --build demo-init
+
+demo-up: demo-check-env ## Demo: build and start the demo API on 127.0.0.1:DEMO_API_PORT (run demo-init first)
+	docker compose --profile demo up -d --build --wait demo-api
+
+demo-down: ## Demo: stop and remove the demo containers (the demo database volume is kept)
+	docker compose --profile demo rm --stop --force $(DEMO_SERVICES)
+
+demo-logs: ## Demo: follow the demo API logs
+	docker compose --profile demo logs --tail=200 -f demo-api
