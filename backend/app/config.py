@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     llm_retry_attempts_5xx: int = 4
     llm_max_retry_wait_seconds: float = 60.0
 
+    # Invoice extraction (backend/app/extraction/, decision 042).
+    extraction_confidence_threshold: Decimal = Decimal("0.80")
+    extraction_max_pdf_bytes: int = 5_000_000
+    extraction_max_pages: int = 5
+
 
 @lru_cache
 def get_settings() -> Settings:

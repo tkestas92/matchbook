@@ -278,6 +278,7 @@ dependencies = [
     { name = "openpyxl" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic-settings" },
+    { name = "pypdf" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "reportlab" },
@@ -288,7 +289,6 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "pre-commit" },
-    { name = "pypdf" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -301,6 +301,7 @@ requires-dist = [
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "psycopg", extras = ["binary"] },
     { name = "pydantic-settings" },
+    { name = "pypdf", specifier = ">=6.21.4,<7" },
     { name = "python-dotenv" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "reportlab", specifier = ">=5.1.0" },
@@ -311,7 +312,6 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "pre-commit" },
-    { name = "pypdf", specifier = ">=6.21.4" },
     { name = "pytest" },
     { name = "ruff" },
 ]
