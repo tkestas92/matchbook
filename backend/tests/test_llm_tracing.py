@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import re
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -21,7 +22,8 @@ from app.llm.tracing import (
     LLMCallEvent,
     NoopTracer,
     create_tracer,
-    rejected_count,
+    rejected_spans,
+    unix_nano,
 )
 from pydantic import BaseModel, ConfigDict, SecretStr
 
@@ -47,6 +49,20 @@ EVENT = LLMCallEvent(
     latency_s=1.5,
 )
 FAILED_EVENT = LLMCallEvent(**{**EVENT.__dict__, "status": "LLMOutputInvalid", "attempts": 2})
+NOW_NANO = 1_794_452_400_000_000_000  # 2026-11-12T03:00:00Z
+ALLOWED_ATTRIBUTES = {
+    "langfuse.trace.name",
+    "langfuse.observation.type",
+    "langfuse.observation.model.name",
+    "langfuse.observation.usage_details",
+    "langfuse.observation.cost_details",
+    "langfuse.observation.level",
+    "langfuse.observation.metadata.prompt_id",
+    "langfuse.observation.metadata.prompt_hash",
+    "langfuse.observation.metadata.attempts",
+    "langfuse.observation.metadata.status",
+    "langfuse.observation.metadata.cost_eur",
+}
 
 Handler = Callable[[httpx.Request], httpx.Response]
 
@@ -54,7 +70,7 @@ Handler = Callable[[httpx.Request], httpx.Response]
 class Recorder:
     def __init__(self, response: httpx.Response | Exception | None = None) -> None:
         self.requests: list[httpx.Request] = []
-        self.response = response if response is not None else httpx.Response(207, json={})
+        self.response = response if response is not None else httpx.Response(200, json={})
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -64,6 +80,29 @@ class Recorder:
 
     def bodies(self) -> list[dict]:
         return [json.loads(r.content) for r in self.requests]
+
+    def spans(self) -> list[dict]:
+        return [only_span(body) for body in self.bodies()]
+
+
+def only_span(body: dict) -> dict:
+    (resource_spans,) = body["resourceSpans"]
+    (scope_spans,) = resource_spans["scopeSpans"]
+    (span,) = scope_spans["spans"]
+    return span
+
+
+def attributes(span: dict) -> dict[str, str]:
+    for attribute in span["attributes"]:
+        assert set(attribute) == {"key", "value"}
+        assert set(attribute["value"]) == {"stringValue"}
+    return {a["key"]: a["value"]["stringValue"] for a in span["attributes"]}
+
+
+def partial_success(rejected: object, message: str = "spans refused") -> httpx.Response:
+    return httpx.Response(
+        200, json={"partialSuccess": {"rejectedSpans": rejected, "errorMessage": message}}
+    )
 
 
 def make_tracer(handler: Handler, max_failures: int = 3) -> LangfuseTracer:
@@ -180,73 +219,91 @@ def test_llm_client_is_traced_under_the_run_only_when_given_a_run_id(
 # --- what is sent ---------------------------------------------------------------------------
 
 
-def test_first_call_sends_the_trace_and_a_metadata_only_generation() -> None:
+def test_a_call_is_posted_as_otlp_json_with_the_v4_ingestion_header() -> None:
     recorder = Recorder()
     make_tracer(recorder).on_call(EVENT)
     request = recorder.requests[0]
     body = recorder.bodies()[0]
 
     assert request.method == "POST"
-    assert str(request.url) == f"{HOST}/api/public/ingestion"
-    assert set(body) == {"batch"}
-    trace, generation = body["batch"]
-    assert [trace["type"], generation["type"]] == ["trace-create", "generation-create"]
-    for item in body["batch"]:
-        assert set(item) == {"id", "timestamp", "type", "body"}
+    assert str(request.url) == f"{HOST}/api/public/otel/v1/traces"
+    assert request.headers["Content-Type"] == "application/json"
+    assert request.headers["x-langfuse-ingestion-version"] == "4"
+    assert set(body) == {"resourceSpans"}
+    (resource_spans,) = body["resourceSpans"]
+    assert resource_spans["resource"] == {"attributes": []}
+    (scope_spans,) = resource_spans["scopeSpans"]
+    assert scope_spans["scope"] == {"name": "matchbook.llm"}
 
-    assert trace["body"] == {
-        "id": str(RUN_ID),
-        "name": "pipeline-run",
-        "timestamp": NOW.isoformat(),
-    }
-    sent = generation["body"]
-    assert set(sent) == {
-        "id",
+
+def test_a_call_is_one_parentless_span_under_the_run_trace() -> None:
+    recorder = Recorder()
+    make_tracer(recorder).on_call(EVENT)
+    span = recorder.spans()[0]
+
+    assert set(span) == {
         "traceId",
+        "spanId",
         "name",
-        "model",
-        "startTime",
-        "endTime",
-        "usageDetails",
-        "costDetails",
-        "level",
-        "metadata",
+        "kind",
+        "startTimeUnixNano",
+        "endTimeUnixNano",
+        "attributes",
     }
-    assert sent["traceId"] == str(RUN_ID)
-    assert sent["name"] == "invoice_extraction"
-    assert sent["model"] == "gemini-3.1-flash-lite"
-    assert sent["startTime"] == "2026-11-12T02:59:58.500000+00:00"
-    assert sent["endTime"] == NOW.isoformat()
-    assert sent["usageDetails"] == {"input": 1200, "output": 300}
-    assert sent["costDetails"] == {"total": 0.00075}
-    assert sent["level"] == "DEFAULT"
-    assert sent["metadata"] == {
-        "prompt_id": "extract_invoice_v1",
-        "prompt_hash": "abc123",
-        "attempts": 1,
-        "status": "ok",
-        "cost_eur": "0.00075",
-    }
+    assert span["traceId"] == RUN_ID.hex
+    assert re.fullmatch(r"[0-9a-f]{32}", span["traceId"])
+    assert re.fullmatch(r"[0-9a-f]{16}", span["spanId"])
+    assert span["name"] == "invoice_extraction"
+    assert span["kind"] == 1
+    assert span["startTimeUnixNano"] == str(NOW_NANO - 1_500_000_000)
+    assert span["endTimeUnixNano"] == str(NOW_NANO)
+
+
+def test_span_attributes_are_exactly_the_metadata_allowlist() -> None:
+    recorder = Recorder()
+    make_tracer(recorder).on_call(EVENT)
+    sent = attributes(recorder.spans()[0])
+
+    assert set(sent) == ALLOWED_ATTRIBUTES
+    assert sent["langfuse.trace.name"] == "pipeline-run"
+    assert sent["langfuse.observation.type"] == "generation"
+    assert sent["langfuse.observation.model.name"] == "gemini-3.1-flash-lite"
+    assert json.loads(sent["langfuse.observation.usage_details"]) == {"input": 1200, "output": 300}
+    assert json.loads(sent["langfuse.observation.cost_details"]) == {"total": 0.00075}
+    assert sent["langfuse.observation.level"] == "DEFAULT"
+    assert sent["langfuse.observation.metadata.prompt_id"] == "extract_invoice_v1"
+    assert sent["langfuse.observation.metadata.prompt_hash"] == "abc123"
+    assert sent["langfuse.observation.metadata.attempts"] == "1"
+    assert sent["langfuse.observation.metadata.status"] == "ok"
+    assert sent["langfuse.observation.metadata.cost_eur"] == "0.00075"
 
 
 def test_failed_call_is_an_error_level_generation_with_the_class_name() -> None:
     recorder = Recorder()
     make_tracer(recorder).on_call(FAILED_EVENT)
-    sent = recorder.bodies()[0]["batch"][-1]["body"]
-    assert sent["level"] == "ERROR"
-    assert sent["statusMessage"] == "LLMOutputInvalid"
-    assert sent["metadata"]["attempts"] == 2
+    sent = attributes(recorder.spans()[0])
+    assert set(sent) == ALLOWED_ATTRIBUTES | {"langfuse.observation.status_message"}
+    assert sent["langfuse.observation.level"] == "ERROR"
+    assert sent["langfuse.observation.status_message"] == "LLMOutputInvalid"
+    assert sent["langfuse.observation.metadata.attempts"] == "2"
 
 
-def test_trace_is_created_once_per_tracer() -> None:
+def test_every_span_carries_the_trace_name_and_the_run_trace_id() -> None:
     recorder = Recorder()
     tracer = make_tracer(recorder)
     tracer.on_call(EVENT)
     tracer.on_call(EVENT)
-    first, second = recorder.bodies()
-    assert [item["type"] for item in first["batch"]] == ["trace-create", "generation-create"]
-    assert [item["type"] for item in second["batch"]] == ["generation-create"]
+    first, second = recorder.spans()
+    assert first["traceId"] == second["traceId"] == RUN_ID.hex
+    assert first["spanId"] != second["spanId"]
+    for span in (first, second):
+        assert attributes(span)["langfuse.trace.name"] == "pipeline-run"
     assert tracer.stats.sent == 2
+
+
+def test_unix_nano_is_an_exact_decimal_string() -> None:
+    assert unix_nano(NOW) == str(NOW_NANO)
+    assert unix_nano(datetime(1970, 1, 1, 0, 0, 0, 1, tzinfo=UTC)) == "1000"
 
 
 def test_keys_travel_only_as_basic_auth(caplog: pytest.LogCaptureFixture) -> None:
@@ -287,8 +344,8 @@ def test_no_document_prompt_or_output_text_reaches_langfuse(tmp_path: Path) -> N
     raw = recorder.requests[0].content.decode()
     for forbidden in (iban, email, phone, "INV-001", "121.00", prompt, "[IBAN_1]", "[EMAIL_1]"):
         assert forbidden not in raw
-    for item in recorder.bodies()[0]["batch"]:
-        assert not {"input", "output"} & set(item["body"])
+    for key in attributes(recorder.spans()[0]):
+        assert "input" not in key and "output" not in key
 
 
 # --- failures never matter ------------------------------------------------------------------
@@ -314,15 +371,6 @@ def test_failures_are_swallowed_counted_and_logged_without_detail(
     assert f"Langfuse tracing failed: {logged}" in caplog.text
     assert SECRET not in caplog.text
     assert "slow" not in caplog.text and "down" not in caplog.text
-
-
-def test_trace_is_resent_after_a_failed_first_call() -> None:
-    recorder = Recorder(httpx.Response(503))
-    tracer = make_tracer(recorder)
-    tracer.on_call(EVENT)
-    recorder.response = httpx.Response(207, json={"successes": [], "errors": []})
-    tracer.on_call(EVENT)
-    assert recorder.bodies()[1]["batch"][0]["type"] == "trace-create"
 
 
 def test_breaker_stops_sending_after_consecutive_failures(
@@ -351,21 +399,56 @@ def test_a_success_resets_the_failure_count() -> None:
     assert tracer.stats.skipped == 0
 
 
-def test_events_langfuse_refuses_are_counted_as_rejected() -> None:
-    errors = [{"id": "x", "status": 400, "message": "invalid"}]
-    tracer = make_tracer(Recorder(httpx.Response(207, json={"successes": [], "errors": errors})))
-    tracer.on_call(EVENT)
-    assert (tracer.stats.sent, tracer.stats.rejected) == (1, 1)
+@pytest.mark.parametrize("rejected", [1, "1"])
+def test_rejected_spans_are_counted_and_logged_without_the_server_message(
+    caplog: pytest.LogCaptureFixture, rejected: object
+) -> None:
+    tracer = make_tracer(Recorder(partial_success(rejected, "Event type not accepted")))
+    with caplog.at_level(logging.WARNING):
+        tracer.on_call(EVENT)
+    assert (tracer.stats.sent, tracer.stats.rejected, tracer.stats.failed) == (0, 1, 0)
+    assert "Langfuse rejected 1 span(s)" in caplog.text
+    assert "not accepted" not in caplog.text
+    assert SECRET not in caplog.text
+
+
+def test_rejections_are_logged_once_and_trip_the_breaker(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    recorder = Recorder(partial_success(1))
+    tracer = make_tracer(recorder, max_failures=3)
+    with caplog.at_level(logging.WARNING):
+        for _ in range(5):
+            tracer.on_call(EVENT)
+    assert len(recorder.requests) == 3
+    assert (tracer.stats.rejected, tracer.stats.skipped) == (3, 2)
+    assert caplog.text.count("Langfuse rejected") == 1
+    assert caplog.text.count("off for the rest of this run") == 1
+
+
+def test_a_partial_success_warning_without_rejections_is_a_success(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    tracer = make_tracer(Recorder(partial_success(0, "a server warning")))
+    with caplog.at_level(logging.WARNING):
+        tracer.on_call(EVENT)
+    assert (tracer.stats.sent, tracer.stats.rejected) == (1, 0)
+    assert caplog.text == ""
 
 
 @pytest.mark.parametrize(
     "response",
     [
-        httpx.Response(200, json={"errors": [{"id": "x"}]}),
-        httpx.Response(207, content=b"not json"),
-        httpx.Response(207, json=[1, 2]),
-        httpx.Response(207, json={"errors": "nope"}),
+        httpx.Response(200, json={}),
+        httpx.Response(200, content=b"not json"),
+        httpx.Response(200, json=[1, 2]),
+        httpx.Response(200, json={"partialSuccess": "nope"}),
+        httpx.Response(200, json={"partialSuccess": {"rejectedSpans": "many"}}),
+        httpx.Response(200, json={"partialSuccess": {"rejectedSpans": -1}}),
+        httpx.Response(202, json={"partialSuccess": {"rejectedSpans": 1}}),
     ],
 )
-def test_rejected_count_is_zero_unless_a_207_lists_errors(response: httpx.Response) -> None:
-    assert rejected_count(response) == 0
+def test_rejected_spans_is_zero_unless_a_200_reports_rejections(
+    response: httpx.Response,
+) -> None:
+    assert rejected_spans(response) == 0
