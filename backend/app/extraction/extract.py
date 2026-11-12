@@ -6,6 +6,9 @@
           -> invalid answer: FAILED
           -> code checks -> per-field confidence -> EXTRACTED or NEEDS_REVIEW
 
+The caller passes the known vendors (decision 044) and, optionally, known campaign refs; the
+extractor never reads the database.
+
 There is no path or file-name parameter: only what is inside the document counts. Statuses
 come from code; nothing here ever approves an invoice. Cost-cap and provider errors are not
 caught: the pipeline (2.7) decides whether the run stops.
@@ -27,6 +30,7 @@ from app.extraction.schema import (
     InvoiceExtraction,
     LLMUsage,
 )
+from app.extraction.vendors import KnownVendors
 from app.llm.client import InputTooLarge, LLMClient, LLMOutputInvalid, LLMResult
 
 TASK = "invoice_extraction"
@@ -53,6 +57,8 @@ def extract_invoice(
     client: LLMClient,
     config: ExtractionConfig,
     known_campaign_refs: frozenset[str] | None = None,
+    *,
+    known_vendors: KnownVendors,
 ) -> ExtractionResult:
     try:
         pdf_text = read_pdf(pdf, config.max_pdf_bytes, config.max_pages)
@@ -60,7 +66,9 @@ def extract_invoice(
         return ExtractionResult(status=FAILED, reasons=("pdf:unreadable",))
     if pdf_text.findings:
         return rejected(pdf_text.findings)
-    return extract_invoice_text(pdf_text.text, client, config, known_campaign_refs)
+    return extract_invoice_text(
+        pdf_text.text, client, config, known_campaign_refs, known_vendors=known_vendors
+    )
 
 
 def extract_invoice_text(
@@ -68,6 +76,8 @@ def extract_invoice_text(
     client: LLMClient,
     config: ExtractionConfig,
     known_campaign_refs: frozenset[str] | None = None,
+    *,
+    known_vendors: KnownVendors,
 ) -> ExtractionResult:
     findings = scan(text)
     if findings:
@@ -79,7 +89,7 @@ def extract_invoice_text(
     except LLMOutputInvalid:
         return ExtractionResult(status=FAILED, reasons=("llm:output_invalid",))
 
-    evaluation = evaluate(answer.data, text, known_campaign_refs)
+    evaluation = evaluate(answer.data, text, known_campaign_refs, known_vendors=known_vendors)
     reasons = list(evaluation.reasons)
     if answer.data.contains_instructions:
         reasons.append("model:contains_instructions")

@@ -23,7 +23,7 @@
 |---|---:|---:|---:|---:|---:|---:|
 | type | 128 | 128 | 0 | 0 | 100.0% | 0 |
 | kind | 124 | 124 | 0 | 0 | 100.0% | 0 |
-| vendor | 128 | 66 | 62 | 0 | 51.6% | 62 |
+| vendor | 128 | 128 | 0 | 0 | 100.0% | 0 |
 | number | 128 | 128 | 0 | 0 | 100.0% | 0 |
 | client_code | 128 | 128 | 0 | 0 | 100.0% | 0 |
 | platform | 128 | 128 | 0 | 0 | 100.0% | 0 |
@@ -44,11 +44,11 @@
 
 ## Quality
 
-- Document exact match: 65/128 (50.8%)
+- Document exact match: 127/128 (99.2%)
 - Line precision: 208/209 (99.5%); line recall: 208/209 (99.5%)
 - needs_review rate: 0.0%
-- **Wrong but extracted** (documents marked `extracted` that differ from the truth): **63**
-- Wrong values at or above the confidence threshold: 62
+- **Wrong but extracted** (documents marked `extracted` that differ from the truth): **1**
+- Wrong values at or above the confidence threshold: 0
 - Benign documents rejected by the guards: 0
 
 ## Injection resistance
@@ -62,7 +62,7 @@
 - Tokens: in 94086 / out 46406
 - Cost: EUR 0.09313050
 - Model attempts: 128
-- Latency per extracted document: mean 6.99 s, p50 7.02 s, max 8.72 s
+- Latency per extracted document: mean 6.94 s, p50 6.93 s, max 8.32 s
 
 ## Known issues
 

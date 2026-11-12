@@ -5,6 +5,7 @@ data/generated or the real answer key. `main` (the live run) is never called her
 """
 
 import json
+import re
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
@@ -24,7 +25,14 @@ from app.extraction.schema import (
 )
 from app.llm.cost import CostCapExceeded
 from app.llm.provider import ModelRequest, ModelResponse, ProviderError
-from tests.extraction_samples import CONFIG, META_ANSWER, META_TEXT, as_json, make_client
+from tests.extraction_samples import (
+    CONFIG,
+    KNOWN_VENDORS,
+    META_ANSWER,
+    META_TEXT,
+    as_json,
+    make_client,
+)
 
 from evals.extraction import (
     EXIT_FAIL,
@@ -39,6 +47,7 @@ from evals.extraction import (
     check_malicious,
     discover_documents,
     exit_code,
+    known_vendors_from_config,
     read_state,
     run_documents,
     select_documents,
@@ -55,10 +64,13 @@ from evals.extraction_scoring import (
     injection_passed,
     parse_ground_truth,
     render_details,
+    render_known_issues,
     render_results,
     score_document,
     summarize,
 )
+from generator.documents.config import load_documents_config
+from generator.world import DEFAULT_CONFIG_PATH, load_config
 
 THRESHOLD = Decimal("0.80")
 HIGH = Decimal("0.95")
@@ -335,6 +347,12 @@ def test_results_file_has_counts_only() -> None:
         assert leak not in text
 
 
+def test_known_issues_sentences_are_separated_by_a_space() -> None:
+    (issue,) = render_known_issues(summarize(sample_scores()))
+    assert "has one. The PDF does not print the ref" in issue
+    assert re.search(r"\.[A-Z]", issue) is None
+
+
 def test_terminal_details_name_fields_not_values() -> None:
     details = render_details(sample_scores())
     assert "DANGEROUS invoices/CN-0001.pdf" in details and "total" in details
@@ -342,6 +360,17 @@ def test_terminal_details_name_fields_not_values() -> None:
 
 
 # --- inputs -------------------------------------------------------------------------------
+
+
+def test_known_vendors_are_the_configured_platforms_and_the_agency() -> None:
+    expected = {p.name for p in load_config().platforms} | {load_documents_config().agency.name}
+    vendors = known_vendors_from_config(DEFAULT_CONFIG_PATH)
+    assert vendors.canonical_names == tuple(sorted(expected))
+
+
+def test_missing_vendor_config_is_a_setup_error(tmp_path: Path) -> None:
+    with pytest.raises(SetupError, match="known vendors"):
+        known_vendors_from_config(tmp_path / "missing.yaml")
 
 
 def write_document(root: Path, relative: str, payload: dict[str, Any], body: bytes) -> Path:
@@ -439,7 +468,26 @@ def test_throttle_keeps_calls_apart_and_counts_them() -> None:
 
 # --- resume state -------------------------------------------------------------------------
 
-HEADER = StateHeader(model="test-model", prompt_hash="abc", seed=1, threshold="0.80")
+HEADER = StateHeader(
+    model="test-model", prompt_hash="abc", seed=1, threshold="0.80", vendors=("Meta", "TikTok")
+)
+
+
+def test_state_saved_before_vendor_resolution_is_stale(tmp_path: Path) -> None:
+    path = tmp_path / "state.jsonl"
+    old_header = {k: v for k, v in HEADER.as_dict().items() if k != "vendors"}
+    path.write_text(json.dumps({"header": old_header}) + "\n", encoding="utf-8")
+    StateWriter(path, "2026-11").append(sample_scores()[0])
+    saved = read_state(path, HEADER)
+    assert saved.stale and saved.scores == {}
+
+
+def test_state_for_another_vendor_list_is_stale(tmp_path: Path) -> None:
+    path = tmp_path / "state.jsonl"
+    writer = StateWriter(path, "2026-11")
+    writer.start(HEADER, {})
+    writer.append(sample_scores()[0])
+    assert read_state(path, replace(HEADER, vendors=("Meta",))).stale
 
 
 def test_state_round_trip_keeps_outcomes_only(tmp_path: Path) -> None:
@@ -564,7 +612,9 @@ def test_real_extractor_never_calls_the_model_for_a_malicious_copy(tmp_path: Pat
         [bad, good],
         frozenset({"M-1"}),
         {},
-        lambda data: extract_invoice_text(data.decode(), client, CONFIG),
+        lambda data: extract_invoice_text(
+            data.decode(), client, CONFIG, known_vendors=KNOWN_VENDORS
+        ),
         counter,
         THRESHOLD,
         lambda s: None,

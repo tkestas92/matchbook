@@ -12,6 +12,7 @@ from typing import Any
 
 from app.config import ModelPrice
 from app.extraction.extract import ExtractionConfig
+from app.extraction.vendors import KnownVendors
 from app.llm.client import LLMClient, LLMLimits
 from app.llm.cost import CostLedger
 from app.llm.fake import FakeProvider, Scripted
@@ -22,6 +23,7 @@ from generator.documents.model import Invoice, InvoiceLine
 MODEL = "test-model"
 PRICE = ModelPrice(input_eur_per_mtok=Decimal("1"), output_eur_per_mtok=Decimal("2"))
 CONFIG = ExtractionConfig()
+KNOWN_VENDORS = KnownVendors.of(("Meta", "Google", "TikTok", "UAB Matchbook Media"))
 
 IBAN = "LT12 1000 0111 0100 1000"
 EMAIL = "billing@vendor.example"

@@ -6,22 +6,34 @@ from typing import Any
 import pytest
 from app.extraction.confidence import amounts_in, evaluate
 from app.extraction.schema import InvoiceExtraction
+from app.extraction.vendors import KnownVendors
 from tests.extraction_samples import (
     AGENCY_ANSWER,
     AGENCY_TEXT,
     CREDIT_NOTE_ANSWER,
     CREDIT_NOTE_TEXT,
+    EMAIL,
     GOOGLE_ANSWER,
     GOOGLE_TEXT,
+    IBAN,
+    KNOWN_VENDORS,
     META_ANSWER,
     META_TEXT,
+    PHONE,
     SAMPLES,
     as_json,
 )
 
 
-def run(text: str, answer: dict[str, Any], known: frozenset[str] | None = None, **changes: Any):
-    return evaluate(InvoiceExtraction.model_validate_json(as_json(answer, **changes)), text, known)
+def run(
+    text: str,
+    answer: dict[str, Any],
+    known: frozenset[str] | None = None,
+    vendors: KnownVendors = KNOWN_VENDORS,
+    **changes: Any,
+):
+    raw = InvoiceExtraction.model_validate_json(as_json(answer, **changes))
+    return evaluate(raw, text, known, known_vendors=vendors)
 
 
 @pytest.mark.parametrize("layout", sorted(SAMPLES))
@@ -113,6 +125,35 @@ def test_an_ungrounded_value_gets_zero(field: str, value: str) -> None:
     evaluation = run(META_TEXT, META_ANSWER, **{field: value})
     assert f"grounding:{field}" in evaluation.reasons
     assert evaluation.field_confidence[field] == 0
+
+
+def test_printed_vendor_heading_resolves_to_the_canonical_name() -> None:
+    evaluation = run(META_TEXT, META_ANSWER, vendor="Meta Ads")
+    assert evaluation.document.vendor == "Meta"
+    assert evaluation.reasons == ()
+    assert evaluation.field_confidence["vendor"] == Decimal("0.95")
+
+
+def test_a_grounded_but_unknown_vendor_gets_zero_and_a_fixed_reason() -> None:
+    text = META_TEXT.replace("Meta Ads", "Acme Media Ads")
+    evaluation = run(text, META_ANSWER, vendor="Acme Media")
+    assert evaluation.reasons == ("unknown:vendor",)
+    assert evaluation.field_confidence["vendor"] == 0
+    assert evaluation.document.vendor == "Acme Media"  # printed value kept for the reviewer
+
+
+def test_empty_known_vendors_resolve_nothing() -> None:
+    evaluation = run(META_TEXT, META_ANSWER, vendors=KnownVendors.of(()))
+    assert evaluation.reasons == ("unknown:vendor",)
+    assert evaluation.field_confidence["vendor"] == 0
+
+
+def test_vendor_reasons_carry_no_document_text() -> None:
+    text = META_TEXT.replace("Meta Ads", f"Acme Media Ads {EMAIL}")
+    evaluation = run(text, META_ANSWER, vendor=f"Acme Media {EMAIL}")
+    assert "unknown:vendor" in evaluation.reasons
+    for reason in evaluation.reasons:
+        assert all(s.casefold() not in reason.casefold() for s in ("acme", EMAIL, IBAN, PHONE))
 
 
 def test_dates_ground_in_every_printed_format() -> None:
