@@ -32,6 +32,7 @@ from app.db.models.eval import AnswerKey
 from app.db.roles import MissingRolePasswordError
 from app.extraction.extract import PROMPT_ID, ExtractionConfig, extract_invoice
 from app.extraction.schema import ExtractionResult
+from app.extraction.vendors import KnownVendors
 from app.llm.client import MissingApiKeyError, create_llm_client
 from app.llm.cost import CostCapExceeded, CostLedger, monthly_spend
 from app.llm.prompts import load_prompt
@@ -59,6 +60,8 @@ from evals.extraction_scoring import (
     summarize,
 )
 from evals.stage1 import eval_runner_database_url
+from generator.documents.config import load_documents_config
+from generator.world import DEFAULT_CONFIG_PATH, ConfigError, load_config
 
 DEFAULT_DATA_DIR = Path("data/generated")
 DEFAULT_RESULTS_PATH = Path("docs/eval-results-extraction.md")
@@ -128,6 +131,16 @@ def check_malicious(documents: Sequence[EvalDocument], key_numbers: frozenset[st
         )
 
 
+def known_vendors_from_config(path: Path) -> KnownVendors:
+    """Canonical vendors from the generator config: platform names and the agency (decision 044)."""
+    try:
+        platforms = load_config(path).platforms
+        agency = load_documents_config(path).agency
+        return KnownVendors.of([*(p.name for p in platforms), agency.name])
+    except (OSError, KeyError, TypeError, ValueError, ConfigError) as exc:
+        raise SetupError(f"{path}: cannot read known vendors ({type(exc).__name__})") from exc
+
+
 def group_of(doc: EvalDocument, malicious_numbers: frozenset[str]) -> str:
     return MALICIOUS if doc.truth.number in malicious_numbers else BENIGN
 
@@ -186,6 +199,7 @@ class StateHeader:
     prompt_hash: str
     seed: int | None
     threshold: str
+    vendors: tuple[str, ...]  # canonical names; state saved before decision 044 has none
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -193,6 +207,7 @@ class StateHeader:
             "prompt_hash": self.prompt_hash,
             "seed": self.seed,
             "threshold": self.threshold,
+            "vendors": list(self.vendors),
         }
 
 
@@ -200,7 +215,7 @@ class StateHeader:
 class SavedState:
     scores: dict[str, DocumentScore]  # by relative path
     spent_by_month: dict[str, Decimal]
-    stale: bool  # the file was for another model, prompt, data seed or threshold
+    stale: bool  # the file was for another model, prompt, data seed, threshold or vendor list
 
 
 def score_to_record(score: DocumentScore, month: str) -> dict[str, Any]:
@@ -259,7 +274,7 @@ def add_spend(spent: dict[str, Decimal], month: str, cost: Decimal) -> None:
 
 
 def read_state(path: Path, header: StateHeader) -> SavedState:
-    """Scores saved for this model, prompt, seed and threshold; spend is kept either way."""
+    """Scores saved for this model, prompt, seed, threshold and vendors; spend is kept either way."""
     if not path.is_file():
         return SavedState({}, {}, stale=False)
     scores: dict[str, DocumentScore] = {}
@@ -407,6 +422,12 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extraction eval: PDFs vs ground truth.")
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     parser.add_argument("--results", type=Path, default=DEFAULT_RESULTS_PATH)
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG_PATH,
+        help="Generator config the known vendors are read from.",
+    )
     parser.add_argument("--state", type=Path, default=DEFAULT_STATE_PATH)
     parser.add_argument(
         "--limit",
@@ -452,6 +473,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         finally:
             engine.dispose()
         check_malicious(documents, malicious_numbers)
+        known_vendors = known_vendors_from_config(args.config)
         prompt = load_prompt(PROMPT_ID)
         config = ExtractionConfig.from_settings(settings)
         header = StateHeader(
@@ -459,6 +481,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             prompt_hash=prompt.sha256,
             seed=read_seed(args.data_dir),
             threshold=str(config.confidence_threshold),
+            vendors=known_vendors.canonical_names,
         )
         saved = read_state(args.state, header)
     except (SetupError, AnswerKeyError, MissingRolePasswordError) as exc:
@@ -472,7 +495,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_SETUP
 
     if saved.stale:
-        print("note: saved progress is for another model, prompt, seed or threshold; starting over")
+        print(
+            "note: saved progress is for another model, prompt, seed, threshold or vendor list; "
+            "starting over"
+        )
     scores = {} if args.fresh else saved.scores
     run_cap = settings.llm_run_cap_eur
     if args.max_cost is not None:
@@ -504,7 +530,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             selected,
             malicious_numbers,
             scores,
-            lambda data: extract_invoice(data, client, config),
+            lambda data: extract_invoice(data, client, config, known_vendors=known_vendors),
             counter,
             config.confidence_threshold,
             writer.append,

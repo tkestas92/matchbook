@@ -6,7 +6,9 @@ Every field gets a set of pass/fail checks:
 - arithmetic: lines sum to the subtotal, VAT = subtotal × rate (half up to cents), total =
   subtotal + VAT, rate is 21%;
 - format: dates parse and are in order, currency is EUR, the number matches a known vendor
-  format, campaign refs match `CLIENT-PLATFORM-YYMM` and, when given, a known ref.
+  format, campaign refs match `CLIENT-PLATFORM-YYMM` and, when given, a known ref;
+- unknown: the printed vendor resolves to a known canonical vendor (decision 044); the document
+  carries the canonical name, and an unresolved vendor sends the document to review.
 
 A field's confidence is 0 if any of its checks failed, otherwise the model's own score. The
 model's score is one input: it can only lower a field, never raise it. Fields the code derives
@@ -25,6 +27,7 @@ from app.extraction.schema import (
     InvoiceExtraction,
     LineExtraction,
 )
+from app.extraction.vendors import KnownVendors
 
 CURRENCY = "EUR"
 VAT_RATES = frozenset({Decimal("0.21")})
@@ -321,7 +324,11 @@ def check_required(
 
 
 def evaluate(
-    raw: InvoiceExtraction, visible_text: str, known_refs: frozenset[str] | None = None
+    raw: InvoiceExtraction,
+    visible_text: str,
+    known_refs: frozenset[str] | None = None,
+    *,
+    known_vendors: KnownVendors,
 ) -> Evaluation:
     text = VisibleText.of(visible_text)
     card = Scorecard()
@@ -340,6 +347,8 @@ def evaluate(
     check_required(card, raw, doc_type, kind)
 
     card.check("vendor", text.has_string(raw.vendor), "grounding")
+    vendor = known_vendors.resolve(raw.vendor)
+    card.check("vendor", vendor is not None, "unknown")
     card.check("bill_to", text.has_string(raw.bill_to), "grounding")
     if raw.account_id is not None:
         card.check("account_id", text.has_digits(raw.account_id), "grounding")
@@ -367,7 +376,7 @@ def evaluate(
     document = ExtractedDocument(
         type=doc_type,
         kind=kind,
-        vendor=raw.vendor,
+        vendor=vendor if vendor is not None else raw.vendor,
         number=raw.number,
         client_code=client_code,
         platform=platform,

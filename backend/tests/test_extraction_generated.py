@@ -16,7 +16,7 @@ import pytest
 from app.extraction.extract import extract_invoice
 from app.extraction.guards import scan
 from app.extraction.pdf_text import read_pdf
-from tests.extraction_samples import CONFIG, make_client
+from tests.extraction_samples import CONFIG, KNOWN_VENDORS, make_client
 
 from generator.documents.billing import build_documents
 from generator.documents.config import DocumentsConfig, load_documents_config
@@ -110,7 +110,7 @@ def test_every_inbox_copy_is_rejected_before_the_model_is_called(
 ) -> None:
     for doc in malicious(rendered):
         client, fake = make_client([])
-        result = extract_invoice(doc.path.read_bytes(), client, CONFIG)
+        result = extract_invoice(doc.path.read_bytes(), client, CONFIG, known_vendors=KNOWN_VENDORS)
         assert result.status == "rejected", f"{doc.variant} {doc.label()}: {result.reasons}"
         assert result.document is None
         assert len(fake.requests) == 0, f"{doc.variant} {doc.label()}"
