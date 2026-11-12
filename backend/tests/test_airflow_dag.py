@@ -138,7 +138,7 @@ def test_task_ids() -> None:
     step_task_ids = [task_id for task_id, _ in constant("STEP_TASKS")]
 
     assert set(functions()) == {"start", "run_steps", "record", "outcome"}
-    assert len(step_task_ids) == len(set(step_task_ids)) == 7
+    assert len(step_task_ids) == len(set(step_task_ids)) == 8
     assert not {"start", "record", "outcome"} & set(step_task_ids)
 
 

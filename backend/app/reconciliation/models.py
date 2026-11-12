@@ -301,3 +301,38 @@ class PacingOutcome:
     results: list[PacingResult]
     drafts: list[PacingDraft]
     skipped: list[PacingOrder]  # No linked campaign, or no budget to pace against.
+
+
+@dataclass(frozen=True)
+class NameObservation:
+    """One reported day of a campaign with the name the platform gave it that day."""
+
+    platform: str
+    platform_campaign_id: str
+    client: str
+    date: date  # Account-local, as reported.
+    name: str
+    spend: Decimal | None
+
+
+@dataclass(frozen=True)
+class RenameCandidate:
+    """A tagged campaign reported under untagged names first seen in `period`."""
+
+    platform: str
+    platform_campaign_id: str
+    client: str
+    period: date  # First day of the month.
+    old_name: str
+    new_names: tuple[str, ...]  # In order of first appearance.
+    renamed_from: date  # The first day any of `new_names` was reported.
+    amount: Decimal  # Spend reported under `new_names` in `period`.
+
+
+@dataclass(frozen=True)
+class RenameVerdict:
+    """What the issue proposes; never applied by code (decision 047)."""
+
+    action: str
+    note: str | None = None  # The model's reason, shown as unverified data.
+    codes: tuple[str, ...] = ()  # Fixed codes for why there is no model judgment.

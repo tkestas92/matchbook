@@ -49,6 +49,7 @@ CONFIRMED_ORDER = [
     "normalize",
     "quality",
     "load_plans",
+    "match_names",
     "load_invoices",
     "reconcile",
     "pacing",
@@ -96,6 +97,7 @@ def test_steps_run_in_the_confirmed_order() -> None:
     assert names == CONFIRMED_ORDER
     assert names.index("quality") < names.index("reconcile") < names.index("pacing")
     assert names.index("normalize") < names.index("load_plans")
+    assert names.index("load_plans") < names.index("match_names") < names.index("reconcile")
 
 
 def test_status_is_succeeded_when_every_step_is_clean() -> None:
@@ -312,7 +314,8 @@ def test_a_failing_step_stops_the_run_and_is_recorded(
 
     assert outcome.status == FAILED
     assert outcome.exit_code == 1
-    assert [s["name"] for s in outcome.steps] == CONFIRMED_ORDER[:6]
+    stop = CONFIRMED_ORDER.index("load_invoices")
+    assert [s["name"] for s in outcome.steps] == CONFIRMED_ORDER[: stop + 1]
     assert outcome.steps[-1]["status"] == FAILED
     row = next(r for r in run_rows(module_pipeline_db.owner) if r.id == outcome.run_id)
     assert row.status == FAILED

@@ -44,6 +44,8 @@ from pipelines.ingest import (
 )
 from pipelines.load_invoices import LLM, InvoiceSettings, load_invoices
 from pipelines.load_plans import DEFAULT_DATA_DIR, RejectedDocument, load_plans
+from pipelines.match_names import LLM as NAME_LLM
+from pipelines.match_names import NameSettings, match_names
 from pipelines.normalize import NormalizeResult, run_normalize
 from pipelines.pacing import pace
 from pipelines.quality import run_quality_checks, write_findings
@@ -85,8 +87,18 @@ class RunContext:
     as_of: date | None = None
     normalized: NormalizeResult | None = None  # Set by normalize, read by quality.
     invoice_settings: InvoiceSettings = field(default_factory=InvoiceSettings)
-    # Called only by the llm invoice source, so ground truth needs no API key.
+    name_settings: NameSettings = field(default_factory=NameSettings)
+    # Called only by the llm invoice source and the llm name judge, so the default modes need
+    # no API key; through `llm_client` it is called at most once per run.
     llm_client_factory: "Callable[[RunContext], LLMClient] | None" = None
+    _llm_client: LLMClient | None = field(default=None, init=False, repr=False)
+
+    def llm_client(self) -> LLMClient:
+        """The run's one client, built on first use, so one ledger caps every step's calls."""
+        if self._llm_client is None:
+            factory = self.llm_client_factory or default_llm_client
+            self._llm_client = factory(self)
+        return self._llm_client
 
 
 StepFn = Callable[[RunContext], Counts]
@@ -182,6 +194,22 @@ def step_load_plans(ctx: RunContext) -> Counts:
     }
 
 
+def step_match_names(ctx: RunContext) -> Counts:
+    client = ctx.llm_client() if ctx.name_settings.judge == NAME_LLM else None
+    result = match_names(ctx.run_id, ctx.etl, ctx.app, client)
+    return {
+        "candidates": result.candidates,
+        "already_known": result.already_known,
+        "judged": result.judged,
+        "issues_written": result.issues_written,
+        "skipped_cost_cap": result.skipped_cost_cap,
+        "skipped_provider_error": result.skipped_provider_error,
+        "llm_cost_eur": str(result.llm_cost_eur),  # A string, so the JSON keeps it exact.
+        "llm_tokens": result.llm_tokens,
+        "llm_calls": result.llm_calls,
+    }
+
+
 def extracted_counts(result: LoadExtractedResult) -> Counts:
     return {
         "documents_seen": result.documents_seen,
@@ -204,13 +232,12 @@ def extracted_counts(result: LoadExtractedResult) -> Counts:
 
 
 def step_load_invoices_llm(ctx: RunContext) -> Counts:
-    factory = ctx.llm_client_factory or default_llm_client
     result = load_invoices_llm(
         ctx.run_id,
         ctx.data_dir,
         ctx.etl,
         ctx.app,
-        factory(ctx),
+        ctx.llm_client(),
         ExtractionConfig.from_settings(get_settings()),
         known_vendors_from_config(ctx.invoice_settings.known_vendors_config),
     )
@@ -255,13 +282,15 @@ def step_pacing(ctx: RunContext) -> Counts:
 
 
 # Quality runs before reconcile and pacing, which update the issues it writes (decisions 030,
-# 031); plans load after normalize, which creates the campaigns they link (decision 029).
+# 031); plans load after normalize, which creates the campaigns they link (decision 029);
+# renames are matched once plans are linked and before reconcile (decision 047).
 STEPS: tuple[tuple[str, StepFn], ...] = (
     ("reference", step_reference),
     ("ingest", step_ingest),
     ("normalize", step_normalize),
     ("quality", step_quality),
     ("load_plans", step_load_plans),
+    ("match_names", step_match_names),
     ("load_invoices", step_load_invoices),
     ("reconcile", step_reconcile),
     ("pacing", step_pacing),
