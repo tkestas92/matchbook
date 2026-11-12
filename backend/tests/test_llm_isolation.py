@@ -28,7 +28,7 @@ SDK_IMPORT = re.compile(
     re.MULTILINE,
 )
 PROVIDER_ENDPOINT = re.compile(
-    r"generativelanguage\.googleapis\.com|api\.openai\.com|api\.anthropic"
+    r"generativelanguage\.googleapis\.com|api\.openai\.com|api\.anthropic|langfuse\.com"
 )
 
 
@@ -67,3 +67,7 @@ def test_no_provider_access_outside_the_llm_layer(path: Path) -> None:
 )
 def test_sdk_pattern_catches_imports(line: str) -> None:
     assert SDK_IMPORT.search(line)
+
+
+def test_endpoint_pattern_catches_the_langfuse_host() -> None:
+    assert PROVIDER_ENDPOINT.search('host = "https://cloud.langfuse.com"')

@@ -31,7 +31,7 @@ its prompt completely.
      v
  mask PII ──> backend/app/llm/ ──[B3]──> LLM provider          (strict JSON, no tools, cost caps)
      |              |
-     |              └──[B4]──> Langfuse (metadata; masked inputs/outputs only if switched on)
+     |              └──[B4]──> Langfuse (metadata only; never inputs or outputs)
      v
  schema + grounding + arithmetic checks in code
      |
@@ -67,7 +67,7 @@ A4 and A5 are not in the task's original list; they are here because T2 and T5 e
 | B1 | PDF → extractor → `core` | Text, hidden text, metadata, then extracted values | Untrusted data in, untrusted values out | Hidden-text scan, guards, strict schema, grounding checks, status never `approved` (T1, T3) |
 | B2 | Platform API campaign names → name matching | Campaign names chosen by whoever runs the ad account | Untrusted data | Rule finds candidates, minimal context, fixed answer shape, no writes to aliases (T1, T4) |
 | B3 | App → LLM provider | Masked text, prompts | Third party outside our control | PII masking, data minimization, no tools, cost caps, key handling (T2, T4, T5, T6) |
-| B4 | App → Langfuse | Trace metadata; inputs/outputs only if switched on | Third party outside our control | Off without keys, input/output capture off by default and masked, failures never break a call (T2, T6) |
+| B4 | App → Langfuse | Trace metadata only (decision 048) | Third party outside our control | Off without keys, no text field in the trace event, bounded timeout and no retry, failures never break a call (T2, T6) |
 | B5 | The public demo (decisions 035, 036) | Read-only JSON from two `demo.v_*` views | Public internet | `demo_ro` role, GET only, no LLM key and no answer key on the server, `INVOICE_SOURCE=ground_truth` (T6, T7) |
 
 ## 5. OWASP Top 10 for LLM Applications — mapping
@@ -137,7 +137,8 @@ provider or stored in a Langfuse trace, where we no longer control retention.
 - The placeholder mapping stays inside the module: never logged, never returned to callers.
 - Data minimization: the extraction schema has no PII fields; name matching sends only names,
   client, platform and month.
-- Langfuse records inputs and outputs only when `LANGFUSE_CAPTURE_IO=true`, and always after masking.
+- Langfuse never receives inputs or outputs, masked or not: the trace event has no text field, and the
+  adapter sends an explicit metadata-only body (decision 048).
 - Provider and region are chosen in open question 1 of `docs/tasks/stage-2.md`; stage-2 data is
   synthetic.
 
@@ -145,7 +146,8 @@ provider or stored in a Langfuse trace, where we no longer control retention.
 - Each PII type is masked; amounts, dates, invoice numbers and campaign refs are untouched.
 - The masked text of every generated PDF contains zero PII matches.
 - The fake client records every request, and no request contains unmasked PII.
-- Langfuse spans (fake tracer) contain no unmasked PII.
+- The trace event has only metadata fields, and a Langfuse request body (mock transport) holds no
+  document, prompt or output text, masked or not (`test_llm_client.py`, `test_llm_tracing.py`).
 
 **Owners:** 2.3 (masking), 2.4 (masking on every call), 2.9 (traces); 2.2 adds the PII to test
 against · **Status:** planned
@@ -291,8 +293,8 @@ abandoned or has a known vulnerability, and it runs inside the pipeline with acc
 A PDF parser bug is triggered by a crafted invoice.
 
 **Controls.**
-- Expected new dependencies: an LLM provider SDK or plain `httpx` (2.4), a PDF library (2.5),
-  `langfuse` (2.9). Each is added with `uv add`, with a stated reason in the commit message or
+- Expected new dependencies: an LLM provider SDK or plain `httpx` (2.4), a PDF library (2.5).
+  Langfuse tracing (2.9) uses plain `httpx` and adds no package (decision 048). Each is added with `uv add`, with a stated reason in the commit message or
   `docs/decisions.md` (AGENTS.md scope rules), and pinned in `uv.lock`.
 - Prefer fewer packages: plain `httpx` over an SDK where it is enough.
 - Provider SDK imports are allowed only inside `backend/app/llm/` (test from 2.4).

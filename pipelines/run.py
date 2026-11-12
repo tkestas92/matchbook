@@ -110,7 +110,7 @@ def default_llm_client(ctx: RunContext) -> LLMClient:
     spent = monthly_spend(
         ctx.app, datetime.now(UTC), ctx.agency_timezone, exclude_run_id=ctx.run_id
     )
-    return create_llm_client(settings, new_run_ledger(settings, spent))
+    return create_llm_client(settings, new_run_ledger(settings, spent), run_id=ctx.run_id)
 
 
 @dataclass

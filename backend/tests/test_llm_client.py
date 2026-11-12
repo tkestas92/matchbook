@@ -101,15 +101,29 @@ def test_provider_receives_masked_text_only(prompts_dir: Path) -> None:
     assert "INV-001" in sent and "121.00" in sent
 
 
-def test_tracer_receives_masked_text_only(prompts_dir: Path) -> None:
+def test_tracer_event_carries_no_text(prompts_dir: Path) -> None:
+    """Decision 048: the event has no text field, so no tracer can send input or output."""
     tracer = RecordingTracer()
     fake = FakeProvider([f'{{"total": "{EMAIL}"}}'])
     complete(make_client(prompts_dir, fake, tracer=tracer))
     event = tracer.events[0]
     assert event.status == "ok"
-    for original in (IBAN, EMAIL, PHONE):
-        assert original not in event.masked_input
-        assert original not in event.masked_output
+    assert event.attempts == 1
+    assert {f.name for f in dataclasses.fields(event)} == {
+        "task",
+        "prompt_id",
+        "prompt_hash",
+        "model",
+        "status",
+        "attempts",
+        "input_tokens",
+        "output_tokens",
+        "cost_eur",
+        "latency_s",
+    }
+    for value in dataclasses.astuple(event):
+        for original in (IBAN, EMAIL, PHONE, "Invoice INV-001", "Return the total"):
+            assert original not in str(value)
 
 
 def test_failing_tracer_does_not_fail_the_call(prompts_dir: Path) -> None:
@@ -171,6 +185,7 @@ def test_invalid_output_retries_once_then_fails(prompts_dir: Path, bad: str) -> 
         complete(make_client(prompts_dir, fake, tracer=tracer))
     assert len(fake.requests) == 2
     assert tracer.events[0].status == "LLMOutputInvalid"
+    assert tracer.events[0].attempts == 2
 
 
 def test_invalid_then_valid_succeeds(prompts_dir: Path) -> None:

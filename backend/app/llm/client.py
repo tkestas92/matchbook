@@ -2,11 +2,12 @@
 
 `LLMClient.complete_json` runs every guard before anything leaves the process:
 strict schema → input size → PII masking → prompt → cost cap → provider (bounded retries) →
-schema validation (one retry on invalid output, then failure) → tracer (masked text only).
+schema validation (one retry on invalid output, then failure) → tracer (metadata only, no text).
 There is no tools parameter anywhere in this layer (threat model T4).
 """
 
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -27,7 +28,7 @@ from app.llm.provider import (
     ProviderError,
     RetryableProviderError,
 )
-from app.llm.tracing import LLMCallEvent, NoopTracer, Tracer, safe_trace
+from app.llm.tracing import LLMCallEvent, NoopTracer, Tracer, create_tracer, safe_trace
 from pydantic import BaseModel, ValidationError
 
 OUTPUT_ATTEMPTS = 2  # the first answer plus one retry on invalid output, never a repair loop
@@ -110,14 +111,12 @@ class CallTotals:
     output_tokens: int = 0
     cost_eur: Decimal = Decimal(0)
     attempts: int = 0
-    last_text: str = ""
 
     def add(self, response: ModelResponse, cost: Decimal) -> None:
         self.input_tokens += response.input_tokens
         self.output_tokens += response.output_tokens
         self.cost_eur += cost
         self.attempts += 1
-        self.last_text = response.text
 
 
 class LLMClient:
@@ -190,12 +189,11 @@ class LLMClient:
                 prompt_hash=prompt.sha256,
                 model=self.limits.model,
                 status=status,
+                attempts=totals.attempts,
                 input_tokens=totals.input_tokens,
                 output_tokens=totals.output_tokens,
                 cost_eur=totals.cost_eur,
                 latency_s=self.clock() - started,
-                masked_input=masked,
-                masked_output=mask(totals.last_text),
             )
             safe_trace(self.tracer, event)
 
@@ -255,8 +253,12 @@ def create_llm_client(
     ledger: CostLedger,
     tracer: Tracer | None = None,
     http_client: httpx.Client | None = None,
+    run_id: uuid.UUID | None = None,
 ) -> LLMClient:
-    """The production client. A missing key is an error, never a default."""
+    """The production client. A missing key is an error, never a default.
+
+    With a `run_id` and no explicit tracer, calls are traced under that run when Langfuse is set up.
+    """
     key = settings.gemini_api_key
     if key is None or not key.get_secret_value().strip():
         raise MissingApiKeyError(
@@ -270,4 +272,6 @@ def create_llm_client(
         base_url=settings.gemini_base_url,
         max_response_bytes=settings.llm_max_response_bytes,
     )
+    if tracer is None and run_id is not None:
+        tracer = create_tracer(settings, run_id)
     return LLMClient(provider, LLMLimits.from_settings(settings), ledger, tracer)
