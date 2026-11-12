@@ -29,7 +29,9 @@ from pydantic import ValidationError
 from sqlalchemy import Engine, text
 from tests.conftest import PipelineDb
 from tests.extraction_samples import (
+    AGENCY_ANSWER,
     CONFIG,
+    CREDIT_NOTE_ANSWER,
     IBAN,
     KNOWN_VENDORS,
     META_ANSWER,
@@ -42,23 +44,30 @@ from tests.extraction_samples import (
 
 from generator.documents.contacts import VendorContact
 from generator.documents.injection import INJECTION_VARIANTS
-from generator.documents.pdf import render_invoice
+from generator.documents.model import CreditNote as CreditNoteModel
+from generator.documents.model import InvoiceLine
+from generator.documents.pdf import render_credit_note, render_invoice
 from generator.world import DEFAULT_CONFIG_PATH
 from pipelines import run as runner
 from pipelines.extract_invoices import (
+    CREDIT_REF_UNRESOLVED,
     DUPLICATE_NUMBER,
     MISSING_FIELD,
     PROPOSED_ACTION,
     UNKNOWN_CLIENT,
     UNKNOWN_PLATFORM,
+    LoadExtractedResult,
     ReviewItem,
+    Routed,
     SourceFile,
+    cited_credit_notes,
     discover_pdfs,
     known_vendors_from_config,
     line_confidence,
     load_invoices_llm,
     review_issue_row,
     review_list,
+    route,
     safe_entity_id,
     to_credit_note_document,
     to_invoice_document,
@@ -297,6 +306,137 @@ def test_review_list_holds_the_entity_status_and_codes_only() -> None:
     assert review_list([item]) == [
         {"document": "inbox/x.pdf", "status": REJECTED, "reasons": ["pdf:hidden_text"]}
     ]
+
+
+# --- Agency credit lines take the cited credit note's ref (decision 046) --------------------
+
+NOTE_NUMBER = "GCN-2606-123456"
+MEDIA_LINE = ExtractedLine(1, GOOGLE_REF, f"Media – Google – {GOOGLE_REF}", Decimal("1234.56"))
+CREDIT_LINE = ExtractedLine(2, None, f"Credit note {NOTE_NUMBER} (Google)", Decimal("-100.00"))
+FEE_LINE = ExtractedLine(3, None, "Agency commission 10% on media", Decimal("113.46"))
+NOTE_FIELDS: dict[str, Any] = {
+    "type": "credit_note",
+    "kind": None,
+    "number": NOTE_NUMBER,
+    "original_number": "1234567890",
+    "campaign_ref": GOOGLE_REF,
+    "reason": "Invalid traffic adjustment",
+    "lines": (),
+    "subtotal": Decimal("100.00"),
+}
+
+
+def agency_extraction(*lines: ExtractedLine) -> ExtractionResult:
+    document = extracted_document(
+        kind="client",
+        platform=None,
+        vendor="UAB Matchbook Media",
+        number="MBM-SAU-2605",
+        account_id=None,
+        lines=lines,
+    )
+    confidence = {f"lines[{i}].description": Decimal("0.90") for i in range(len(lines))}
+    return replace(extraction(document), field_confidence=confidence)
+
+
+def note_extraction(**changes: Any) -> ExtractionResult:
+    document = extracted_document(**{**NOTE_FIELDS, **changes})
+    confidence = {"campaign_ref": Decimal("0.85")}
+    return ExtractionResult(EXTRACTED, (), document, field_confidence=confidence)
+
+
+def route_all(*extractions: ExtractionResult) -> tuple[Routed, LoadExtractedResult]:
+    result = LoadExtractedResult(run_id=uuid.uuid4())
+    pairs = [
+        (SourceFile(f"invoices/{i}.pdf", f"{i:064d}", b""), item)
+        for i, item in enumerate(extractions)
+    ]
+    return route(result, pairs, REGISTRY), result
+
+
+@pytest.mark.parametrize(
+    ("description", "cited"),
+    [
+        ("Credit note FBCN-2606-123456 (Meta)", [("FBCN-2606-123456", "meta")]),
+        ("Credit note GCN-2606-123456 (Google)", [("GCN-2606-123456", "google")]),
+        ("Credit note BDCN-2606-123456 (TikTok)", [("BDCN-2606-123456", "tiktok")]),
+        ("Agency commission 10% on media", []),
+        ("Credit XGCN-2606-123456", []),
+        ("Credit GCN-2606-1234567", []),
+        (
+            "GCN-2606-123456 and GCN-2606-654321",
+            [("GCN-2606-123456", "google"), ("GCN-2606-654321", "google")],
+        ),
+    ],
+)
+def test_cited_credit_notes_are_whole_tokens_in_a_known_format(
+    description: str, cited: list[tuple[str, str]]
+) -> None:
+    assert cited_credit_notes(description) == cited
+
+
+def test_agency_credit_line_takes_the_cited_note_ref() -> None:
+    routed, result = route_all(
+        agency_extraction(MEDIA_LINE, CREDIT_LINE, FEE_LINE), note_extraction()
+    )
+    assert result.review == []
+    (invoice,) = routed.invoices.values()
+    media, credit, fee = invoice.lines
+    assert (credit.campaign_ref, credit.amount) == (GOOGLE_REF, Decimal("-100.00"))
+    assert credit.extracted_confidence == Decimal("0.85")  # The lower of the line and the note.
+    assert media.campaign_ref == GOOGLE_REF
+    assert fee.campaign_ref is None  # A positive ref-less line stays the fee line.
+    assert len(routed.notes) == 1
+
+
+@pytest.mark.parametrize(
+    ("description", "notes"),
+    [
+        ("Credit for invalid traffic", [{}]),
+        (CREDIT_LINE.description, []),
+        (f"Credit notes {NOTE_NUMBER} and GCN-2606-654321", [{}, {"number": "GCN-2606-654321"}]),
+        (CREDIT_LINE.description, [{}, {"vendor": "Google Ireland"}]),
+        (CREDIT_LINE.description, [{"platform": "meta"}]),
+        (CREDIT_LINE.description, [{"client_code": "GIN"}]),
+        (CREDIT_LINE.description, [{"period_start": date(2026, 4, 1)}]),
+        (CREDIT_LINE.description, [{"campaign_ref": None}]),
+    ],
+    ids=[
+        "no number",
+        "note not in run",
+        "two numbers",
+        "two notes",
+        "other platform",
+        "other client",
+        "other month",
+        "note without ref",
+    ],
+)
+def test_unresolved_agency_credit_line_sends_the_invoice_to_review(
+    description: str, notes: list[dict[str, Any]]
+) -> None:
+    credit = replace(CREDIT_LINE, description=description)
+    agency = agency_extraction(MEDIA_LINE, credit, FEE_LINE)
+    routed, result = route_all(agency, *(note_extraction(**changes) for changes in notes))
+    assert routed.invoices == {}
+    assert [(item.status, item.reasons) for item in result.review] == [
+        (NEEDS_REVIEW, (CREDIT_REF_UNRESOLVED,))
+    ]
+    assert result.review[0].client_id == 1
+    assert len(routed.notes) == len(notes)  # The notes themselves still load.
+
+
+def test_lines_that_need_no_credit_ref_are_left_alone() -> None:
+    with_ref = replace(CREDIT_LINE, campaign_ref=GOOGLE_REF)
+    platform_credit = ExtractedLine(2, None, "Adjustment", Decimal("-10.00"))
+    platform = extracted_document(lines=(MEDIA_LINE, platform_credit))
+    routed, result = route_all(
+        agency_extraction(MEDIA_LINE, with_ref, FEE_LINE), extraction(platform)
+    )
+    assert result.review == []
+    agency, google = routed.invoices.values()
+    assert [line.campaign_ref for line in agency.lines] == [GOOGLE_REF, GOOGLE_REF, None]
+    assert [line.campaign_ref for line in google.lines] == [GOOGLE_REF, None]
 
 
 def test_run_cost_sums_decimal_strings_exactly() -> None:
@@ -602,3 +742,90 @@ def test_later_steps_leave_extraction_issues_alone(seeded: PipelineDb, data_dir:
     pace(run_id, seeded.app, date(2026, 5, 31))
 
     assert extraction_issues(seeded.owner) == before
+
+
+def test_agency_credit_line_is_loaded_with_the_cited_note_ref(
+    seeded: PipelineDb, tmp_path: Path
+) -> None:
+    root = tmp_path / "credited"
+    render(root / "invoices/google/1234567890.pdf")
+    note_path = root / "credit_notes/google/GCN.pdf"
+    note_path.parent.mkdir(parents=True)
+    render_credit_note(
+        CreditNoteModel(
+            vendor="Google",
+            number=NOTE_NUMBER,
+            original_number="1234567890",
+            client_code="SAU",
+            platform_key="google",
+            bill_to="UAB Matchbook Media",
+            issue_date=date(2026, 6, 4),
+            period_start=date(2026, 5, 1),
+            period_end=date(2026, 5, 31),
+            campaign_ref=GOOGLE_REF,
+            reason="Invalid traffic adjustment",
+            subtotal=Decimal("100.00"),
+            vat_rate=Decimal("0.21"),
+            vat=Decimal("21.00"),
+            total=Decimal("121.00"),
+        ),
+        note_path,
+    )
+    agency_lines = tuple(
+        InvoiceLine(line.line_no, line.campaign_ref, line.description, line.amount)
+        for line in (MEDIA_LINE, CREDIT_LINE, FEE_LINE)
+    )
+    agency = replace(
+        hand_built_invoice("agency"),
+        lines=agency_lines,
+        subtotal=Decimal("1248.02"),
+        vat=Decimal("262.08"),
+        total=Decimal("1510.10"),
+    )
+    agency_path = root / "invoices/agency/MBM-SAU-2605.pdf"
+    agency_path.parent.mkdir(parents=True)
+    render_invoice(agency, agency_path, "LT100000000000")
+
+    note_answer = as_json(
+        CREDIT_NOTE_ANSWER,
+        vendor="Google",
+        number=NOTE_NUMBER,
+        original_number="1234567890",
+        campaign_ref=GOOGLE_REF,
+    )
+    agency_answer = as_json(
+        AGENCY_ANSWER,
+        bill_to="UAB Matchbook Media",
+        issue_date="2026-06-01",
+        due_date="2026-07-01",
+        lines=[
+            {
+                "campaign_ref": line.campaign_ref,
+                "description": line.description,
+                "amount": str(line.amount),
+            }
+            for line in (MEDIA_LINE, CREDIT_LINE, FEE_LINE)
+        ],
+        subtotal="1248.02",
+        vat="262.08",
+        total="1510.10",
+    )
+    # Path order: credit_notes/ before invoices/agency/ before invoices/google/.
+    client, _ = make_client([note_answer, agency_answer, as_json(GOOGLE_ANSWER)])
+    result = load(seeded, root, client)
+
+    assert result.review == []
+    assert (result.invoices_written, result.credit_notes_written) == (2, 1)
+    with seeded.owner.connect() as conn:
+        lines = conn.execute(
+            text(
+                "SELECT l.campaign_ref, l.amount FROM core.invoice_lines l "
+                "JOIN core.invoices i ON i.id = l.invoice_id "
+                "WHERE i.number = 'MBM-SAU-2605' ORDER BY l.line_no"
+            )
+        ).all()
+    assert [tuple(row) for row in lines] == [
+        (GOOGLE_REF, Decimal("1234.56")),
+        (GOOGLE_REF, Decimal("-100.00")),
+        (None, Decimal("113.46")),
+    ]
