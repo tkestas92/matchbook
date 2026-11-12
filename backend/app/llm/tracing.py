@@ -2,10 +2,13 @@
 
 A tracer only ever sees an `LLMCallEvent`, which has no text field: no prompt, document or model
 output can reach a trace, masked or not (threat model T2). Tracing is off unless the Langfuse keys
-and host are all configured, and a tracing failure never fails or retries a call.
+and host are all configured, and a tracing failure never fails or retries a call. Spans go to
+Langfuse's OTLP/HTTP JSON endpoint; the legacy ingestion API is gone from 2026-11-16.
 """
 
+import json
 import logging
+import secrets
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -19,10 +22,13 @@ from pydantic import SecretStr
 
 logger = logging.getLogger(__name__)
 
-INGESTION_PATH = "/api/public/ingestion"
+OTLP_TRACES_PATH = "/api/public/otel/v1/traces"
+INGESTION_VERSION_HEADER = {"x-langfuse-ingestion-version": "4"}
+SCOPE_NAME = "matchbook.llm"
+SPAN_KIND_INTERNAL = 1
 TRACE_NAME = "pipeline-run"
 OK_STATUS = "ok"
-MULTI_STATUS = 207
+EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 @dataclass(frozen=True)
@@ -70,7 +76,10 @@ def default_http_client(timeout_seconds: float) -> httpx.Client:
 
 
 class LangfuseTracer:
-    """One POST per call, no retry; after `max_failures` failures in a row it stops sending."""
+    """One OTLP span per call, no retry; after `max_failures` failures in a row it stops sending.
+
+    A refused span (OTLP partial success) counts toward the breaker too: nothing was stored.
+    """
 
     def __init__(
         self,
@@ -84,13 +93,13 @@ class LangfuseTracer:
     ) -> None:
         self._public_key = public_key
         self._secret_key = secret_key
-        self._url = host.rstrip("/") + INGESTION_PATH
-        self._trace_id = str(trace_id)
+        self._url = host.rstrip("/") + OTLP_TRACES_PATH
+        self._trace_id = trace_id.hex
         self._client = client
         self._max_failures = max_failures
         self._now = now
         self._failures_in_row = 0
-        self._trace_sent = False
+        self._rejection_logged = False
         self.stats = TracerStats()
 
     def on_call(self, event: LLMCallEvent) -> None:
@@ -99,76 +108,104 @@ class LangfuseTracer:
             return
         try:
             auth = httpx.BasicAuth(self._public_key, self._secret_key.get_secret_value())
-            response = self._client.post(self._url, auth=auth, json=self._batch(event))
+            response = self._client.post(
+                self._url, auth=auth, headers=INGESTION_VERSION_HEADER, json=self._payload(event)
+            )
         except Exception as exc:
             self._fail(type(exc).__name__)
             return
         if not response.is_success:
             self._fail(f"HTTP {response.status_code}")
             return
+        rejected = rejected_spans(response)
+        if rejected:
+            self._reject(rejected)
+            return
         self._failures_in_row = 0
-        self._trace_sent = True
         self.stats.sent += 1
-        self.stats.rejected += rejected_count(response)
 
     def _fail(self, reason: str) -> None:
         self.stats.failed += 1
-        self._failures_in_row += 1
         logger.warning("Langfuse tracing failed: %s", reason)
+        self._count_toward_breaker()
+
+    def _reject(self, count: int) -> None:
+        """Logs counts only, once per tracer; Langfuse's error message is never logged."""
+        self.stats.rejected += count
+        if not self._rejection_logged:
+            self._rejection_logged = True
+            logger.warning(
+                "Langfuse rejected %d span(s) (OTLP partial success); "
+                "further rejections are counted only",
+                count,
+            )
+        self._count_toward_breaker()
+
+    def _count_toward_breaker(self) -> None:
+        self._failures_in_row += 1
         if self._failures_in_row == self._max_failures:
             logger.warning(
                 "Langfuse tracing is off for the rest of this run after %d failures in a row",
                 self._max_failures,
             )
 
-    def _batch(self, event: LLMCallEvent) -> dict[str, Any]:
+    def _payload(self, event: LLMCallEvent) -> dict[str, Any]:
+        scope_spans = {"scope": {"name": SCOPE_NAME}, "spans": [self._span(event)]}
+        return {"resourceSpans": [{"resource": {"attributes": []}, "scopeSpans": [scope_spans]}]}
+
+    def _span(self, event: LLMCallEvent) -> dict[str, Any]:
+        """A parentless generation span; all of a run's spans share the run's trace id."""
         end = self._now()
-        items = [] if self._trace_sent else [envelope("trace-create", end, self._trace(end))]
-        items.append(envelope("generation-create", end, self._generation(event, end)))
-        return {"batch": items}
-
-    def _trace(self, at: datetime) -> dict[str, Any]:
-        return {"id": self._trace_id, "name": TRACE_NAME, "timestamp": at.isoformat()}
-
-    def _generation(self, event: LLMCallEvent, end: datetime) -> dict[str, Any]:
-        failed = event.status != OK_STATUS
-        body: dict[str, Any] = {
-            "id": str(uuid.uuid4()),
+        return {
             "traceId": self._trace_id,
+            "spanId": secrets.token_hex(8),
             "name": event.task,
-            "model": event.model,
-            "startTime": (end - timedelta(seconds=event.latency_s)).isoformat(),
-            "endTime": end.isoformat(),
-            "usageDetails": {"input": event.input_tokens, "output": event.output_tokens},
-            # Display only, for Langfuse's cost totals; the exact Decimal is in metadata.
-            "costDetails": {"total": float(event.cost_eur)},
-            "level": "ERROR" if failed else "DEFAULT",
-            "metadata": {
-                "prompt_id": event.prompt_id,
-                "prompt_hash": event.prompt_hash,
-                "attempts": event.attempts,
-                "status": event.status,
-                "cost_eur": str(event.cost_eur),
-            },
+            "kind": SPAN_KIND_INTERNAL,
+            "startTimeUnixNano": unix_nano(end - timedelta(seconds=event.latency_s)),
+            "endTimeUnixNano": unix_nano(end),
+            "attributes": generation_attributes(event),
         }
-        if failed:
-            body["statusMessage"] = event.status
-        return body
 
 
-def envelope(kind: str, at: datetime, body: dict[str, Any]) -> dict[str, Any]:
-    return {"id": str(uuid.uuid4()), "timestamp": at.isoformat(), "type": kind, "body": body}
+def generation_attributes(event: LLMCallEvent) -> list[dict[str, Any]]:
+    """The whole attribute set; tests pin these keys. No input or output attribute, ever."""
+    failed = event.status != OK_STATUS
+    usage = {"input": event.input_tokens, "output": event.output_tokens}
+    # Display only, for Langfuse's cost totals; the exact Decimal is in metadata.
+    cost = {"total": float(event.cost_eur)}
+    values = {
+        "langfuse.trace.name": TRACE_NAME,
+        "langfuse.observation.type": "generation",
+        "langfuse.observation.model.name": event.model,
+        "langfuse.observation.usage_details": json.dumps(usage),
+        "langfuse.observation.cost_details": json.dumps(cost),
+        "langfuse.observation.level": "ERROR" if failed else "DEFAULT",
+        "langfuse.observation.metadata.prompt_id": event.prompt_id,
+        "langfuse.observation.metadata.prompt_hash": event.prompt_hash,
+        "langfuse.observation.metadata.attempts": str(event.attempts),
+        "langfuse.observation.metadata.status": event.status,
+        "langfuse.observation.metadata.cost_eur": str(event.cost_eur),
+    }
+    if failed:
+        values["langfuse.observation.status_message"] = event.status
+    return [{"key": key, "value": {"stringValue": value}} for key, value in values.items()]
 
 
-def rejected_count(response: httpx.Response) -> int:
-    """Langfuse answers 207 with a list of events it refused; their content is never logged."""
-    if response.status_code != MULTI_STATUS:
+def unix_nano(at: datetime) -> str:
+    """OTLP JSON encodes 64-bit integers as decimal strings; integer math, no float rounding."""
+    return str((at - EPOCH) // timedelta(microseconds=1) * 1000)
+
+
+def rejected_spans(response: httpx.Response) -> int:
+    """`partialSuccess.rejectedSpans` of a 200 answer (int64, so a number or a string), else 0."""
+    if response.status_code != 200:
         return 0
     try:
-        errors = response.json().get("errors")
-    except (ValueError, AttributeError):
+        partial = response.json().get("partialSuccess")
+        count = int(partial.get("rejectedSpans", 0))
+    except (ValueError, TypeError, AttributeError):
         return 0
-    return len(errors) if isinstance(errors, list) else 0
+    return max(count, 0)
 
 
 def create_tracer(
