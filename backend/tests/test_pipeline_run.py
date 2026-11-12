@@ -26,6 +26,7 @@ from mock_platforms.app import create_app
 from mock_platforms.config import MockPlatformsSettings
 from pipelines import run as runner
 from pipelines.ingest import IngestFailure, IngestResult, IngestSettings
+from pipelines.load_invoices import GROUND_TRUTH, InvoiceSettings
 from pipelines.run import (
     FAILED,
     PARTIAL,
@@ -211,6 +212,7 @@ def context(db: PipelineDb, client: httpx.Client, data_dir: Path) -> RunContext:
         client=client,
         ingest_settings=settings,
         agency_timezone="Europe/Vilnius",
+        invoice_settings=InvoiceSettings(_env_file=None, source=GROUND_TRUTH),
     )
 
 
