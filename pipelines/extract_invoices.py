@@ -3,7 +3,8 @@
     discover PDFs (invoices/, credit_notes/, inbox/; never a .json)
       -> sha256 already loaded or reviewed: skipped, no model call
       -> extract_invoice (decision 042) outside any transaction
-      -> extracted: written to core with the ground-truth writers (status `extracted`)
+      -> extracted: written to core with the ground-truth writers (status `extracted`); an agency
+         credit line takes the campaign ref of the credit note it cites (decision 046)
       -> needs_review / rejected / failed: never in core, one `app.issues` card per file
 
 Only `extracted` documents reach `core`, so nothing a human has not seen is reconciled. A
@@ -16,7 +17,7 @@ import re
 import uuid
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -24,6 +25,7 @@ from typing import Any
 
 from app.db.models.app import Issue
 from app.db.models.core import CreditNote, InsertionOrder, Invoice
+from app.extraction.confidence import NUMBER_FORMATS
 from app.extraction.extract import ExtractionConfig, extract_invoice
 from app.extraction.schema import (
     EXTRACTED,
@@ -80,6 +82,14 @@ MISSING_FIELD = "load:missing_field"
 UNKNOWN_ORIGINAL = "load:unknown_original"
 DUPLICATE_NUMBER = "load:duplicate_number"
 UNKNOWN_TYPE = "load:unknown_type"
+CREDIT_REF_UNRESOLVED = "load:credit_ref_unresolved"
+
+# Credit-note number formats (decision 042), searched for as whole tokens inside a line's text.
+CREDIT_NOTE_NUMBERS = tuple(
+    (re.compile(rf"(?<![A-Za-z0-9-]){fmt.pattern.pattern}(?![A-Za-z0-9-])"), fmt.platform)
+    for fmt in NUMBER_FORMATS
+    if fmt.type == CREDIT_NOTE_TYPE
+)
 
 
 @dataclass(frozen=True)
@@ -375,7 +385,95 @@ def route(
         except RowError as error:
             item = review_item(source, NEEDS_REVIEW, (str(error),), document, registry)
             result.review.append(item)
+    resolve_credit_refs(result, routed, registry)
     return routed
+
+
+def cited_credit_notes(description: str) -> list[tuple[str, str | None]]:
+    """Credit-note numbers printed in a line's text, with the platform their format implies."""
+    return [
+        (match.group(), platform)
+        for pattern, platform in CREDIT_NOTE_NUMBERS
+        for match in pattern.finditer(description)
+    ]
+
+
+def same_month(first: date | None, second: date | None) -> bool:
+    return (
+        first is not None and second is not None and first.replace(day=1) == second.replace(day=1)
+    )
+
+
+def matching_credit_note(
+    invoice: ExtractedDocument, description: str, notes: Sequence[ExtractionResult]
+) -> ExtractionResult | None:
+    """The one credit note of this run that the line cites, if it fits the invoice (decision 046).
+
+    The line must cite exactly one credit-note number, exactly one extracted note must have that
+    number and platform, and that note must be for the same client and month and carry a ref.
+    """
+    cited = cited_credit_notes(description)
+    if len(cited) != 1:
+        return None
+    number, platform = cited[0]
+    found = [
+        note
+        for note in notes
+        if note.document is not None
+        and (note.document.number, note.document.platform) == (number, platform)
+    ]
+    if len(found) != 1:
+        return None
+    note = required(found[0].document)
+    fits = (
+        note.campaign_ref is not None
+        and note.client_code == invoice.client_code
+        and same_month(note.period_start, invoice.period_start)
+    )
+    return found[0] if fits else None
+
+
+def with_credit_refs(
+    invoice: InvoiceDocument, document: ExtractedDocument, notes: Sequence[ExtractionResult]
+) -> InvoiceDocument:
+    """Fill each negative ref-less line of a client invoice from the credit note it cites.
+
+    Raises `RowError(CREDIT_REF_UNRESOLVED)` if any such line has no matching note: it would
+    otherwise be read as a fee line by reconcile.
+    """
+    if invoice.kind == KIND_PLATFORM:
+        return invoice
+    lines = []
+    for line in invoice.lines:
+        if line.campaign_ref is not None or line.amount >= 0:
+            lines.append(line)
+            continue
+        note = matching_credit_note(document, line.description, notes)
+        if note is None:
+            raise RowError(CREDIT_REF_UNRESOLVED)
+        scores = (line.extracted_confidence, (note.field_confidence or {}).get("campaign_ref"))
+        lines.append(
+            replace(
+                line,
+                campaign_ref=required(note.document).campaign_ref,
+                extracted_confidence=min((s for s in scores if s is not None), default=None),
+            )
+        )
+    return replace(invoice, lines=tuple(lines))
+
+
+def resolve_credit_refs(result: LoadExtractedResult, routed: Routed, registry: Registry) -> None:
+    """An invoice whose credit line cannot be resolved goes to review instead of `core`."""
+    notes = [routed.sources[key][1] for key in routed.notes]
+    for key, invoice in list(routed.invoices.items()):
+        source, extraction = routed.sources[key]
+        document = required(extraction.document)
+        try:
+            routed.invoices[key] = with_credit_refs(invoice, document, notes)
+        except RowError as error:
+            del routed.invoices[key], routed.sources[key]
+            item = review_item(source, NEEDS_REVIEW, (str(error),), document, registry)
+            result.review.append(item)
 
 
 def add_document(
