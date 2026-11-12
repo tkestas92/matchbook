@@ -8,7 +8,7 @@ from alembic import command
 from app.config import Settings, get_settings
 from app.db.roles import MissingRolePasswordError, ensure_roles, role_passwords
 from app.db.session import app_database_url, etl_database_url
-from app.llm import gemini
+from app.llm import gemini, tracing
 from pydantic import ValidationError
 from sqlalchemy import Engine, create_engine, text
 from tests.test_migrations import alembic_config, temporary_database
@@ -41,8 +41,14 @@ def no_real_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     def refuse(timeout_seconds: float) -> None:
         raise AssertionError("real LLM network client requested in a test")
 
+    def refuse_tracing(timeout_seconds: float) -> None:
+        raise AssertionError("real Langfuse network client requested in a test")
+
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setattr(gemini, "default_http_client", refuse)
+    for name in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(tracing, "default_http_client", refuse_tracing)
 
 
 @pytest.fixture(scope="session")

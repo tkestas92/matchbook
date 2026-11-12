@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     llm_retry_attempts_5xx: int = 4
     llm_max_retry_wait_seconds: float = 60.0
 
+    # LLM call tracing (backend/app/llm/tracing.py, decision 048): off unless all three are set.
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: SecretStr | None = None
+    langfuse_host: str | None = None
+    langfuse_timeout_seconds: float = 2.0
+    langfuse_max_consecutive_failures: int = 3
+
     # Invoice extraction (backend/app/extraction/, decision 042).
     extraction_confidence_threshold: Decimal = Decimal("0.80")
     extraction_max_pdf_bytes: int = 5_000_000
