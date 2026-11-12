@@ -1,5 +1,6 @@
 """Issue types, severities, actions and the template text of every explanation (no LLM)."""
 
+import unicodedata
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -16,6 +17,8 @@ from app.reconciliation.models import (
     PacingDay,
     PacingOrder,
     PacingResult,
+    RenameCandidate,
+    RenameVerdict,
     Slot,
     ZeroSpendRun,
 )
@@ -33,6 +36,7 @@ CREDIT_NOT_APPLIED = "reconciliation_credit_not_applied"
 CREDIT_OVER_APPLIED = "reconciliation_credit_over_applied"
 PACING_OVERPACING = "pacing_overpacing"
 PACING_UNDERPACING = "pacing_underpacing"
+CAMPAIGN_RENAMED = "reconciliation_campaign_renamed"
 
 SEVERITIES = {
     OVERCHARGE: "high",
@@ -70,6 +74,11 @@ PACING_ACTIONS = {
     PACING_UNDERPACING: "Check with the planner why spend runs behind plan; if the flight is "
     "still running, raise delivery or release the budget.",
 }
+
+# A rename issue proposes one of two actions; code picks it, a human decides (decision 047).
+RENAME_SEVERITY = "medium"
+RENAME_CONFIRM_ACTION = "Confirm the new name as an alias"
+RENAME_CHECK_ACTION = "Check: may be a different campaign"
 
 PERCENT_CENTS = Decimal("0.01")
 
@@ -271,3 +280,38 @@ def pacing_explanation(
             f"{'ahead of' if result.peak_gap > 0 else 'behind'} plan."
         )
     return text + zero_spend_text(zero_spend)
+
+
+QUOTED_MAX_CHARS = 200
+
+
+def visible_char(char: str) -> str:
+    category = unicodedata.category(char)
+    if category == "Cf":
+        return ""
+    return " " if category.startswith("C") else char
+
+
+def quoted(text: str, limit: int = QUOTED_MAX_CHARS) -> str:
+    """Untrusted text shown as data: format characters dropped, other control characters and
+    whitespace runs made one space, double quotes made single, cut at `limit`, in quotes."""
+    clean = " ".join("".join(visible_char(char) for char in text).split()).replace('"', "'")
+    if len(clean) > limit:
+        clean = clean[: limit - 1] + "…"
+    return f'"{clean}"'
+
+
+def rename_explanation(candidate: RenameCandidate, verdict: RenameVerdict) -> str:
+    new_names = ", ".join(quoted(name) for name in candidate.new_names)
+    text = (
+        f"{candidate.client} {candidate.platform} {month_text(candidate.period)}: campaign "
+        f"{candidate.platform_campaign_id} is reported as {new_names} from "
+        f"{candidate.renamed_from.isoformat()} instead of {quoted(candidate.old_name)}. The new "
+        "name has no campaign ref tag; delivery stays linked by campaign id. Spend reported under "
+        f"the new name this month: {eur(candidate.amount)}."
+    )
+    if verdict.note is not None:
+        text += f" Model note (unverified): {quoted(verdict.note)}."
+    if verdict.codes:
+        text += f" No model judgment ({', '.join(verdict.codes)})."
+    return text

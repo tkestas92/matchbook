@@ -46,10 +46,11 @@ def quality_type(check: str) -> str:
     return f"quality_{check}"
 
 
-# Issue types that count as finding each planted error (decisions 030, 031, 033).
+# Issue types that count as finding each planted error (decisions 030, 031, 033, 047).
 ACCEPTED_TYPES: dict[int, frozenset[str]] = {
     1: frozenset({templates.OVERCHARGE}),
     2: frozenset({templates.DUPLICATE_INVOICE}),
+    3: frozenset({templates.CAMPAIGN_RENAMED}),
     4: frozenset({templates.TIMEZONE_SHIFT, templates.MONTH_BOUNDARY_SHIFT}),
     5: frozenset({templates.WRONG_MARKUP}),
     6: frozenset({templates.CREDIT_NOT_APPLIED}),
@@ -76,6 +77,7 @@ def planted_campaign(planted: PlantedError) -> str | None:
 # Besides client, platform and month, the issue's entity (see ISSUE_ENTITY) must equal this.
 ENTITY_OF: dict[int, Callable[[PlantedError], str | None]] = {
     2: planted_entity,  # the copy's invoice number
+    3: planted_campaign,
     4: planted_campaign,
     7: planted_entity,  # campaign_ref
     9: planted_campaign,

@@ -31,6 +31,9 @@ PACING_GREEN_MAX = Decimal("1.15")
 PACING_YELLOW_MIN = Decimal("0.85")
 PACING_YELLOW_MAX = Decimal("1.25")
 
+# A model judgment proposes confirming a rename only at or above this confidence.
+RENAME_CONFIRM_MIN_CONFIDENCE = Decimal("0.80")
+
 
 def missing_days_limit(gap_days: int, highest_daily_spend: Decimal) -> Decimal:
     """The largest variance that a campaign's missing days can account for."""

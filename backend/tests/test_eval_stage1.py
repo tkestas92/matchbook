@@ -191,6 +191,14 @@ def test_campaign_errors_match_on_the_campaign() -> None:
     assert len(result.missed) == 1
 
 
+def test_campaign_rename_matches_on_the_campaign() -> None:
+    renamed = planted(3, "ACME-META-2606", stage=2, campaign="c7")
+    found = match([renamed], [issue(1, "reconciliation_campaign_renamed", entity_id="c7")])
+    other = match([renamed], [issue(1, "reconciliation_campaign_renamed", entity_id="c8")])
+    assert len(found.found) == 1 and not found.false_alarms
+    assert len(other.expected_missed) == 1 and len(other.false_alarms) == 1
+
+
 def test_wrong_markup_needs_a_client_level_issue() -> None:
     markup = planted(5, "AG-ACME-2606", platform=None)
     per_platform = match([markup], [issue(1, "reconciliation_wrong_markup")])
@@ -652,6 +660,43 @@ def test_eval_reads_only_open_issues_of_the_latest_finished_run(
     seed_issue(eval_db.owner, world, old_run, "reconciliation_budget_overspend")
     seed_issue(eval_db.owner, world, failed, "reconciliation_budget_overspend")
     assert run_eval(eval_db, tmp_path) == EXIT_PASS
+
+
+@pytest.mark.parametrize(
+    ("in_latest_run", "row"), [(True, "| 1 | 1 | 0 | 0 | 0 |"), (False, "| 1 | 0 | 0 | 1 | 0 |")]
+)
+def test_eval_finds_a_rename_only_in_the_latest_run(
+    eval_db: EvalDb, tmp_path: Path, in_latest_run: bool, row: str
+) -> None:
+    """match_names moves a re-detected rename's run_id to the latest run (decision 047)."""
+    world = seed_world(eval_db.owner)
+    old_run = seed_run(eval_db.owner, hour=1)
+    latest = seed_run(eval_db.owner, hour=2)
+    load_key(
+        eval_db.owner,
+        tmp_path,
+        [
+            entry(
+                3,
+                "ACME-META-2606",
+                error_type="campaign_renamed",
+                entity_type="campaign",
+                detectable_in_stage=2,
+                details={"platform_campaign_id": "120003"},
+            )
+        ],
+    )
+    seed_issue(
+        eval_db.owner,
+        world,
+        latest if in_latest_run else old_run,
+        "reconciliation_campaign_renamed",
+        entity_type="campaign",
+        entity_id="120003",
+    )
+    assert run_eval(eval_db, tmp_path) == EXIT_PASS
+    results = (tmp_path / "eval-results.md").read_text(encoding="utf-8")
+    assert f"| #3 campaign_renamed {row}" in results
 
 
 def test_eval_cannot_run_without_an_answer_key(eval_db: EvalDb, tmp_path: Path) -> None:

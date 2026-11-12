@@ -116,7 +116,8 @@ def test_collect_steps_returns_every_step_of_a_clean_run(tmp_path: Path) -> None
 
 def test_collect_steps_stops_at_the_failed_step_and_keeps_its_error(tmp_path: Path) -> None:
     run_id = str(uuid.uuid4())
-    write_records(tmp_path, run_id, STEP_NAMES[:5])
+    stop = STEP_NAMES.index("load_invoices")
+    write_records(tmp_path, run_id, STEP_NAMES[:stop])
     error = {"step": "load_invoices", "message": "FileNotFoundError: invoices"}
     tasks.write_record(
         tmp_path,
@@ -126,7 +127,7 @@ def test_collect_steps_stops_at_the_failed_step_and_keeps_its_error(tmp_path: Pa
 
     steps, found = tasks.collect_steps(tmp_path, run_id)
 
-    assert [s["name"] for s in steps] == STEP_NAMES[:6]
+    assert [s["name"] for s in steps] == STEP_NAMES[: stop + 1]
     assert "error" not in steps[-1]
     assert found == error
 

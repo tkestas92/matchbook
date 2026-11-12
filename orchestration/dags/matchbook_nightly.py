@@ -25,6 +25,7 @@ STEP_TASKS = (
     ("ingest", ("ingest",)),
     ("normalize_quality", ("normalize", "quality")),
     ("load_plans", ("load_plans",)),
+    ("match_names", ("match_names",)),
     ("load_invoices", ("load_invoices",)),
     ("reconcile", ("reconcile",)),
     ("pacing", ("pacing",)),
