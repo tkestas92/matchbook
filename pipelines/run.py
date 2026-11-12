@@ -15,7 +15,8 @@ import traceback
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +24,17 @@ import httpx
 from app.config import get_settings
 from app.db.models.app import PipelineRun
 from app.db.session import create_app_engine, create_etl_engine
+from app.extraction.extract import ExtractionConfig
+from app.llm.client import LLMClient, create_llm_client, new_run_ledger
+from app.llm.cost import monthly_spend
 from sqlalchemy import Engine, func, insert, update
 
+from pipelines.extract_invoices import (
+    LoadExtractedResult,
+    known_vendors_from_config,
+    load_invoices_llm,
+    review_list,
+)
 from pipelines.ingest import (
     PLATFORMS,
     REQUEST_TIMEOUT_SECONDS,
@@ -32,7 +42,7 @@ from pipelines.ingest import (
     IngestSettings,
     run_ingest,
 )
-from pipelines.load_invoices import load_invoices
+from pipelines.load_invoices import LLM, InvoiceSettings, load_invoices
 from pipelines.load_plans import DEFAULT_DATA_DIR, RejectedDocument, load_plans
 from pipelines.normalize import NormalizeResult, run_normalize
 from pipelines.pacing import pace
@@ -47,7 +57,13 @@ FAILED = "failed"
 PARTIAL = "partial"
 EXIT_CODES = {SUCCEEDED: 0, FAILED: 1, PARTIAL: 2}
 # Counts that mean some input was not loaded, so the run is partial rather than succeeded.
-PARTIAL_COUNTS = ("failures", "rejected_documents")
+# Extraction review items are not here: like quality findings, they are reviewed outcomes.
+PARTIAL_COUNTS = (
+    "failures",
+    "rejected_documents",
+    "skipped_cost_cap",
+    "skipped_provider_error",
+)
 MAX_ERROR_LENGTH = 2000
 
 Counts = dict[str, Any]
@@ -68,9 +84,21 @@ class RunContext:
     agency_timezone: str
     as_of: date | None = None
     normalized: NormalizeResult | None = None  # Set by normalize, read by quality.
+    invoice_settings: InvoiceSettings = field(default_factory=InvoiceSettings)
+    # Called only by the llm invoice source, so ground truth needs no API key.
+    llm_client_factory: "Callable[[RunContext], LLMClient] | None" = None
 
 
 StepFn = Callable[[RunContext], Counts]
+
+
+def default_llm_client(ctx: RunContext) -> LLMClient:
+    """The production client; this month's spend before the run feeds the monthly cap."""
+    settings = get_settings()
+    spent = monthly_spend(
+        ctx.app, datetime.now(UTC), ctx.agency_timezone, exclude_run_id=ctx.run_id
+    )
+    return create_llm_client(settings, new_run_ledger(settings, spent))
 
 
 @dataclass
@@ -154,7 +182,44 @@ def step_load_plans(ctx: RunContext) -> Counts:
     }
 
 
+def extracted_counts(result: LoadExtractedResult) -> Counts:
+    return {
+        "documents_seen": result.documents_seen,
+        "skipped_unchanged": result.skipped_unchanged,
+        "skipped_cost_cap": result.skipped_cost_cap,
+        "skipped_provider_error": result.skipped_provider_error,
+        "invoices_written": result.invoices_written,
+        "lines_written": result.lines_written,
+        "lines_removed": result.lines_removed,
+        "credit_notes_written": result.credit_notes_written,
+        "extracted": result.statuses["extracted"],
+        "needs_review": result.statuses["needs_review"],
+        "rejected": result.statuses["rejected"],
+        "failed": result.statuses["failed"],
+        "review_list": review_list(result.review),
+        "llm_cost_eur": str(result.llm_cost_eur),  # A string, so the JSON keeps it exact.
+        "llm_tokens": result.llm_tokens,
+        "llm_calls": result.llm_calls,
+    }
+
+
+def step_load_invoices_llm(ctx: RunContext) -> Counts:
+    factory = ctx.llm_client_factory or default_llm_client
+    result = load_invoices_llm(
+        ctx.run_id,
+        ctx.data_dir,
+        ctx.etl,
+        ctx.app,
+        factory(ctx),
+        ExtractionConfig.from_settings(get_settings()),
+        known_vendors_from_config(ctx.invoice_settings.known_vendors_config),
+    )
+    return extracted_counts(result)
+
+
 def step_load_invoices(ctx: RunContext) -> Counts:
+    if ctx.invoice_settings.source == LLM:
+        return step_load_invoices_llm(ctx)
     result = load_invoices(ctx.run_id, ctx.data_dir, ctx.etl)
     return {
         "invoices_written": result.invoices_written,
@@ -208,13 +273,33 @@ def start_run(app: Engine, run_id: uuid.UUID) -> None:
         conn.execute(insert(PipelineRun).values(id=run_id, status=RUNNING))
 
 
-def finish_run(app: Engine, run_id: uuid.UUID, status: str, details: dict[str, Any]) -> None:
+def finish_run(
+    app: Engine,
+    run_id: uuid.UUID,
+    status: str,
+    details: dict[str, Any],
+    cost: tuple[Decimal, int] = (Decimal(0), 0),
+) -> None:
+    cost_eur, tokens = cost
     with app.begin() as conn:
         conn.execute(
             update(PipelineRun)
             .where(PipelineRun.id == run_id)
-            .values(status=status, finished_at=func.now(), details=details)
+            .values(
+                status=status,
+                finished_at=func.now(),
+                details=details,
+                cost_eur=cost_eur,
+                tokens=tokens,
+            )
         )
+
+
+def run_cost(steps: Sequence[dict[str, Any]]) -> tuple[Decimal, int]:
+    """LLM spend (EUR) and tokens over the steps' counts; works from Airflow's step records too."""
+    cost_eur = sum((Decimal(step["counts"].get("llm_cost_eur", "0")) for step in steps), Decimal(0))
+    tokens = sum(int(step["counts"].get("llm_tokens", 0)) for step in steps)
+    return cost_eur, tokens
 
 
 def run_status(steps: Sequence[dict[str, Any]]) -> str:
@@ -262,7 +347,13 @@ def execute(ctx: RunContext, steps: Sequence[tuple[str, StepFn]] = STEPS) -> Run
             )
         outcome.status = run_status(outcome.steps)
     finally:
-        finish_run(ctx.app, ctx.run_id, outcome.status, run_details(ctx, outcome))
+        finish_run(
+            ctx.app,
+            ctx.run_id,
+            outcome.status,
+            run_details(ctx, outcome),
+            run_cost(outcome.steps),
+        )
     return outcome
 
 

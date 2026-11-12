@@ -161,6 +161,8 @@ def test_expected_indexes_exist(engine: Engine) -> None:
     assert ("campaign_id", "date") in indexed("core", "daily_delivery")
     assert ("period_start", "period_end") in indexed("core", "invoices")
     assert ("status",) in indexed("app", "issues")
+    assert ("file_sha256",) in indexed("core", "invoices")
+    assert ("file_sha256",) in indexed("core", "credit_notes")
 
 
 def test_updated_at_trigger_on_every_upserted_table(conn: Connection) -> None:
@@ -437,6 +439,56 @@ def test_client_code_is_required(conn: Connection) -> None:
                 "VALUES ('x', 'retail', 'client_owned')"
             )
         )
+
+
+def file_sha256_columns(engine: Engine) -> set[str]:
+    inspector = inspect(engine)
+    return {
+        table
+        for table in ("invoices", "credit_notes")
+        if "file_sha256" in {c["name"] for c in inspector.get_columns(table, schema="core")}
+    }
+
+
+def test_file_sha256_migration_downgrades_and_upgrades_again(database_url: str) -> None:
+    with temporary_database(database_url) as url:
+        config = alembic_config(url)
+        engine = create_engine(url)
+        try:
+            command.upgrade(config, "head")
+            assert file_sha256_columns(engine) == {"invoices", "credit_notes"}
+            command.downgrade(config, "0005")
+            assert file_sha256_columns(engine) == set()
+            command.upgrade(config, "head")
+            assert file_sha256_columns(engine) == {"invoices", "credit_notes"}
+        finally:
+            engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("issue_type", "severity"),
+    [
+        ("extraction_needs_review", "medium"),
+        ("extraction_rejected_suspicious", "high"),
+        ("extraction_failed", "medium"),
+    ],
+)
+def test_issue_checks_accept_the_extraction_types(
+    conn: Connection, issue_type: str, severity: str
+) -> None:
+    """`app.issues.type` has no CHECK, so the extraction types need no schema change."""
+    conn.execute(
+        text(
+            "INSERT INTO app.issues (dedup_key, type, severity, explanation, run_id) "
+            "VALUES (:key, :type, :severity, 'x', :run_id)"
+        ),
+        {
+            "key": f"extraction:{issue_type}",
+            "type": issue_type,
+            "severity": severity,
+            "run_id": uuid.uuid4(),
+        },
+    )
 
 
 def test_client_code_is_unique(conn: Connection) -> None:

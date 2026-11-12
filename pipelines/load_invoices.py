@@ -1,6 +1,8 @@
 """Pipeline step 5: load invoices and credit notes into `core.*`, exactly as the documents say.
 
-Stage 1 reads the JSON next to each PDF; stage 2 replaces that with extraction (decision 029).
+Two sources (decision 045), chosen by `INVOICE_SOURCE`: `ground_truth` (default) reads the JSON
+next to each PDF (decision 029); `llm` extracts the PDFs (`pipelines/extract_invoices.py`) and
+shares the writers below.
 """
 
 import json
@@ -10,10 +12,11 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from pathlib import Path, PurePath
-from typing import Any
+from typing import Any, Literal
 
 from app.db.models.core import CreditNote, Invoice, InvoiceLine
 from app.db.session import create_etl_engine
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import Connection, Engine, delete, select
 
 from pipelines.load_plans import (
@@ -40,8 +43,20 @@ KIND_PLATFORM = "platform"
 KIND_CLIENT = "client"
 DOCUMENT_KEY = ("vendor", "number")
 DUPLICATE_NUMBER = "Another document has the same vendor and number"
+GROUND_TRUTH = "ground_truth"
+LLM = "llm"
+EXTRACTED_STATUS = "extracted"
+GENERATOR_CONFIG = Path(__file__).resolve().parents[1] / "generator/config.yaml"
 
 DocumentKey = tuple[str, str]
+InvoiceSource = Literal["ground_truth", "llm"]
+
+
+class InvoiceSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="INVOICE_", env_file=".env", extra="ignore")
+
+    source: InvoiceSource = GROUND_TRUTH
+    known_vendors_config: Path = GENERATOR_CONFIG
 
 
 @dataclass(frozen=True)
@@ -50,6 +65,7 @@ class Document:
     number: str
     issue_date: date
     file_path: str
+    file_sha256: str | None = field(default=None, kw_only=True)  # Set by the llm source only.
 
     @property
     def key(self) -> DocumentKey:
@@ -62,6 +78,7 @@ class InvoiceLineDocument:
     campaign_ref: str | None
     description: str
     amount: Decimal
+    extracted_confidence: Decimal | None = None  # Set by the llm source only.
 
 
 @dataclass(frozen=True)
@@ -231,9 +248,17 @@ def collect[D: Document](
 
 
 def write_invoices(
-    conn: Connection, run_id: uuid.UUID, invoices: Sequence[InvoiceDocument]
+    conn: Connection,
+    run_id: uuid.UUID,
+    invoices: Sequence[InvoiceDocument],
+    *,
+    extracted: bool = False,
 ) -> dict[DocumentKey, int]:
-    """Upsert invoices and return every invoice id; `status` is outside the upsert."""
+    """Upsert invoices and return every invoice id; `status` is outside the upsert.
+
+    `extracted` (llm source): a new row gets status `extracted`, and `file_sha256` is updated.
+    Ground truth never writes either, so it never clears what the llm source wrote.
+    """
     columns = (
         "kind",
         "client_id",
@@ -245,12 +270,15 @@ def write_invoices(
         "vat",
         "total",
         "file_path",
+        *(("file_sha256",) if extracted else ()),
     )
+    status = {"status": EXTRACTED_STATUS} if extracted else {}
     rows = [
         {
             "vendor": invoice.vendor,
             "number": invoice.number,
             "run_id": run_id,
+            **status,
             **{column: getattr(invoice, column) for column in columns},
         }
         for invoice in invoices
@@ -265,27 +293,28 @@ def write_lines(
     run_id: uuid.UUID,
     invoices: Sequence[InvoiceDocument],
     ids: dict[DocumentKey, int],
+    *,
+    extracted: bool = False,
 ) -> int:
-    """`campaign_id` and `extracted_confidence` belong to later steps and stay untouched."""
+    """`campaign_id` belongs to a later step and stays untouched; `extracted_confidence` is
+    written only by the llm source (`extracted`)."""
+    columns = (
+        "campaign_ref",
+        "description",
+        "amount",
+        *(("extracted_confidence",) if extracted else ()),
+    )
     rows = [
         {
             "invoice_id": ids[invoice.key],
             "line_no": line.line_no,
-            "campaign_ref": line.campaign_ref,
-            "description": line.description,
-            "amount": line.amount,
             "run_id": run_id,
+            **{column: getattr(line, column) for column in columns},
         }
         for invoice in invoices
         for line in invoice.lines
     ]
-    upsert(
-        conn,
-        InvoiceLine,
-        rows,
-        ("invoice_id", "line_no"),
-        ("campaign_ref", "description", "amount", "run_id"),
-    )
+    upsert(conn, InvoiceLine, rows, ("invoice_id", "line_no"), (*columns, "run_id"))
     return len(rows)
 
 
@@ -308,7 +337,18 @@ def write_credit_notes(
     result: LoadInvoicesResult,
     notes: Sequence[CreditNoteDocument],
     ids: dict[DocumentKey, int],
+    *,
+    extracted: bool = False,
 ) -> int:
+    """`extracted` (llm source) also writes `file_sha256`."""
+    columns = (
+        "original_invoice_id",
+        "issue_date",
+        "amount",
+        "reason",
+        "file_path",
+        *(("file_sha256",) if extracted else ()),
+    )
     rows = []
     for note in notes:
         original_id = ids.get((note.vendor, note.original_number))
@@ -318,23 +358,14 @@ def write_credit_notes(
             continue
         rows.append(
             {
-                "original_invoice_id": original_id,
                 "vendor": note.vendor,
                 "number": note.number,
-                "issue_date": note.issue_date,
-                "amount": note.amount,
-                "reason": note.reason,
-                "file_path": note.file_path,
                 "run_id": result.run_id,
+                "original_invoice_id": original_id,
+                **{column: getattr(note, column) for column in columns[1:]},
             }
         )
-    upsert(
-        conn,
-        CreditNote,
-        rows,
-        DOCUMENT_KEY,
-        ("original_invoice_id", "issue_date", "amount", "reason", "file_path", "run_id"),
-    )
+    upsert(conn, CreditNote, rows, DOCUMENT_KEY, (*columns, "run_id"))
     return len(rows)
 
 

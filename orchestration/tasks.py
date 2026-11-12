@@ -123,7 +123,7 @@ def finish_run_record(
     }
     if error is not None:
         details["error"] = error
-    run.finish_run(app, uuid.UUID(run_id), status, details)
+    run.finish_run(app, uuid.UUID(run_id), status, details, run.run_cost(steps))
     return status
 
 

@@ -16,6 +16,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Numeric,
+    String,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -178,6 +179,8 @@ class Invoice(RunIdMixin, CreatedAtMixin, UpdatedAtMixin, Base):
     vat: Mapped[Decimal | None]
     total: Mapped[Decimal]
     file_path: Mapped[str | None]
+    # SHA-256 of the extracted PDF; NULL when loaded from ground truth (decision 045).
+    file_sha256: Mapped[str | None] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(server_default="received")
 
 
@@ -211,6 +214,7 @@ class CreditNote(RunIdMixin, CreatedAtMixin, UpdatedAtMixin, Base):
     amount: Mapped[Decimal]
     reason: Mapped[str | None]
     file_path: Mapped[str | None]
+    file_sha256: Mapped[str | None] = mapped_column(String(64), index=True)
 
 
 class ReconciliationResult(RunIdMixin, CreatedAtMixin, UpdatedAtMixin, Base):
