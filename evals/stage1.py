@@ -6,7 +6,9 @@ per error type. Exit codes: 0 pass, 1 a must-find error was missed or there are 
 than allowed, 2 the eval could not run.
 
 The results file holds counts only. Which entities were missed is printed to the terminal and
-never committed, so the rules cannot be tuned to the answer key.
+never committed, so the rules cannot be tuned to the answer key. `make eval` (evals/stage2.py)
+owns `docs/eval-results.md`, so this eval writes a file only when `--results` is given
+(decision 049). The matching here is shared with the stage-2 eval.
 """
 
 import argparse
@@ -32,7 +34,6 @@ from generator.errors import ERROR_TYPES
 from pipelines import quality
 
 STAGE = 1
-DEFAULT_RESULTS_PATH = Path("docs/eval-results.md")
 DEFAULT_MAX_FALSE_ALARMS = 0
 FINISHED_RUN_STATUSES = ("succeeded", "partial")
 OPEN = "open"
@@ -172,8 +173,11 @@ class SetupError(RuntimeError):
 # --- matching (pure) ----------------------------------------------------------------------
 
 
-def is_must_find(planted: PlantedError) -> bool:
-    return planted.detectable_in_stage <= STAGE
+def is_must_find(planted: PlantedError, stage: int = STAGE) -> bool:
+    return planted.detectable_in_stage <= stage
+
+
+Matcher = Callable[[PlantedError, EvalIssue, frozenset[str]], bool]
 
 
 def matches(planted: PlantedError, issue: EvalIssue, types: frozenset[str]) -> bool:
@@ -193,9 +197,10 @@ def first_match(
     issues: Sequence[EvalIssue],
     used: set[int],
     types: frozenset[str],
+    matcher: Matcher = matches,
 ) -> EvalIssue | None:
     return next(
-        (i for i in issues if i.id not in used and matches(planted, i, types)),
+        (i for i in issues if i.id not in used and matcher(planted, i, types)),
         None,
     )
 
@@ -204,10 +209,13 @@ def match(
     planted: Iterable[PlantedError],
     issues: Iterable[EvalIssue],
     accepted: dict[int, frozenset[str]] = ACCEPTED_TYPES,
+    stage: int = STAGE,
+    matcher: Matcher = matches,
 ) -> EvalResult:
     """Pair each planted error with at most one issue and each issue with at most one error.
 
     Greedy and deterministic: errors in (error_no, entity_ref) order, issues in id order.
+    Errors detectable after `stage` are expected missed; `matcher` decides what an issue matches.
     """
     errors = sorted(planted, key=lambda p: (p.error_no, p.entity_ref))
     ordered = sorted(issues, key=lambda i: i.id)
@@ -215,7 +223,8 @@ def match(
     found: list[tuple[PlantedError, EvalIssue]] = []
     unfound: list[PlantedError] = []
     for error in errors:
-        issue = first_match(error, ordered, used, accepted.get(error.error_no, frozenset()))
+        types = accepted.get(error.error_no, frozenset())
+        issue = first_match(error, ordered, used, types, matcher)
         if issue is None:
             unfound.append(error)
         else:
@@ -225,19 +234,21 @@ def match(
     misclassified: list[Misclassified] = []
     for error in unfound:
         types = PRECURSOR_TYPES.get(error.error_no, frozenset())
-        issue = first_match(error, ordered, used, types)
+        issue = first_match(error, ordered, used, types, matcher)
         if issue is not None:
             used.add(issue.id)
             misclassified.append(Misclassified(error, issue))
 
     found_errors = [error for error, _ in found]
     false_alarms = tuple(
-        false_alarm(issue, found_errors, accepted) for issue in ordered if issue.id not in used
+        false_alarm(issue, found_errors, accepted, matcher)
+        for issue in ordered
+        if issue.id not in used
     )
     return EvalResult(
         found=tuple(found),
-        missed=tuple(e for e in unfound if is_must_find(e)),
-        expected_missed=tuple(e for e in unfound if not is_must_find(e)),
+        missed=tuple(e for e in unfound if is_must_find(e, stage)),
+        expected_missed=tuple(e for e in unfound if not is_must_find(e, stage)),
         misclassified=tuple(misclassified),
         false_alarms=false_alarms,
     )
@@ -247,10 +258,11 @@ def false_alarm(
     issue: EvalIssue,
     found: Sequence[PlantedError],
     accepted: dict[int, frozenset[str]],
+    matcher: Matcher = matches,
 ) -> FalseAlarm:
     error_no = next((no for no, types in sorted(accepted.items()) if issue.type in types), None)
     duplicate = any(
-        matches(error, issue, accepted.get(error.error_no, frozenset())) for error in found
+        matcher(error, issue, accepted.get(error.error_no, frozenset())) for error in found
     )
     reason = "duplicate detection" if duplicate else "no planted error"
     return FalseAlarm(issue=issue, error_no=error_no, reason=reason)
@@ -337,6 +349,33 @@ def render_table(rows: Sequence[SummaryRow]) -> str:
     return "\n".join(lines)
 
 
+def type_stages(errors: Iterable[PlantedError]) -> dict[int, tuple[str, int]]:
+    """Error number -> (name, detectable_in_stage) for the given errors."""
+    return {
+        e.error_no: (ERROR_NAMES.get(e.error_no, e.error_type), e.detectable_in_stage)
+        for e in sorted(errors, key=lambda p: (p.error_no, p.detectable_in_stage))
+    }
+
+
+def stage_list(types: dict[int, tuple[str, int]]) -> str:
+    return ", ".join(f"#{no} {name} (stage {stage})" for no, (name, stage) in sorted(types.items()))
+
+
+def expected_missed_note(result: EvalResult, stage: int = STAGE) -> str:
+    """The footer, from the result: which later-stage types were missed and which were found."""
+    missed = type_stages(result.expected_missed)
+    early = type_stages(p for p, _ in result.found if not is_must_find(p, stage))
+    note = (
+        f"Expected missed: {stage_list(missed)}. Not detectable in stage {stage}; "
+        "they never fail the run."
+        if missed
+        else "Expected missed: none."
+    )
+    if early:
+        note += f" Found although not required in stage {stage}: {stage_list(early)}."
+    return note
+
+
 def render_results(data: EvalInput, result: EvalResult, max_false_alarms: int) -> str:
     """docs/eval-results.md: counts only, no entities; nothing here reads the clock."""
     verdict = "PASS" if passed(result, max_false_alarms) else "FAIL"
@@ -357,8 +396,7 @@ def render_results(data: EvalInput, result: EvalResult, max_false_alarms: int) -
             "",
             render_table(summarize(result)),
             "",
-            "Expected missed: errors not detectable in stage 1 (#3 stage 2, #8 stage 4; "
-            "#10 is not planted until stage 2). They never fail the run.",
+            expected_missed_note(result),
             "",
         ]
     )
@@ -478,7 +516,7 @@ def read_eval_input(conn: Connection) -> EvalInput:
 # --- entry point --------------------------------------------------------------------------
 
 
-def evaluate(engine: Engine, results_path: Path, max_false_alarms: int) -> int:
+def evaluate(engine: Engine, results_path: Path | None, max_false_alarms: int) -> int:
     try:
         with engine.connect() as conn:
             data = read_eval_input(conn)
@@ -493,10 +531,14 @@ def evaluate(engine: Engine, results_path: Path, max_false_alarms: int) -> int:
         print(details)
     if data.other_run_issues:
         print(f"note: {data.other_run_issues} open issues from earlier runs were not evaluated")
-    results_path.parent.mkdir(parents=True, exist_ok=True)
-    results_path.write_text(render_results(data, result, max_false_alarms), encoding="utf-8")
     ok = passed(result, max_false_alarms)
-    print(f"{'PASS' if ok else 'FAIL'}: results written to {results_path}")
+    if results_path is None:
+        print(expected_missed_note(result))
+        print(f"{'PASS' if ok else 'FAIL'} (no results file; `make eval` writes it)")
+    else:
+        results_path.parent.mkdir(parents=True, exist_ok=True)
+        results_path.write_text(render_results(data, result, max_false_alarms), encoding="utf-8")
+        print(f"{'PASS' if ok else 'FAIL'}: results written to {results_path}")
     return EXIT_PASS if ok else EXIT_FAIL
 
 
@@ -509,7 +551,12 @@ def non_negative(value: str) -> int:
 
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Stage 1 eval: app.issues vs the answer key.")
-    parser.add_argument("--results", type=Path, default=DEFAULT_RESULTS_PATH)
+    parser.add_argument(
+        "--results",
+        type=Path,
+        help="Write the stage-1 results file here (default: print only; `make eval` owns "
+        "docs/eval-results.md).",
+    )
     parser.add_argument(
         "--max-false-alarms",
         type=non_negative,

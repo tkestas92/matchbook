@@ -36,7 +36,9 @@ from evals.stage1 import (
     EvalResult,
     eval_runner_database_url,
     evaluate,
+    expected_missed_note,
     match,
+    parse_args,
     passed,
     summarize,
 )
@@ -286,6 +288,32 @@ def test_summary_counts_and_euros() -> None:
     assert total.eur_planted == Decimal("13.75")
     assert total.eur_found == Decimal("10.50")
     assert isinstance(total.eur_planted, Decimal)
+
+
+def test_footer_names_the_expected_misses_and_the_early_finds() -> None:
+    result = match(
+        [
+            planted(3, "ACME-META-2606", error_type="campaign_renamed", stage=2, campaign="c7"),
+            planted(8, "ACME-META-2607", error_type="cpc_spike", month=JULY, stage=4),
+            planted(10, "INV-COPY", error_type="prompt_injection", stage=2),
+        ],
+        [issue(1, "reconciliation_campaign_renamed", entity_id="c7")],
+    )
+    assert expected_missed_note(result) == (
+        "Expected missed: #8 cpc_spike (stage 4), #10 prompt_injection (stage 2). "
+        "Not detectable in stage 1; they never fail the run. "
+        "Found although not required in stage 1: #3 campaign_renamed (stage 2)."
+    )
+
+
+def test_footer_without_expected_misses() -> None:
+    result = match([planted(1, "INV-1")], [issue(1, "reconciliation_overcharge")])
+    assert expected_missed_note(result) == "Expected missed: none."
+
+
+def test_stage_1_writes_no_results_file_unless_asked() -> None:
+    assert parse_args([]).results is None
+    assert parse_args(["--results", "out.md"]).results == Path("out.md")
 
 
 # --- answer key parsing -------------------------------------------------------------------
