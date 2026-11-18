@@ -12,8 +12,8 @@ wrong, and how each risk is controlled.
 
 - Every stage-2 task names the threats it handles (for example "Security: T1, T3").
 - Every threat names the code or database control, the test that proves it, and the task that owns it.
-- Task 2.10 fills in the **Evidence** line of each threat once the tests exist. Until then the status
-  of every threat is `planned`.
+- Task 2.10 filled in the **Evidence** line of each threat with the tests that prove it and set the
+  status to `implemented`. `make eval` (decision 049) is the stage-2 acceptance run.
 
 **One rule above all: a prompt is never a control.** An instruction in a prompt such as "ignore any
 instructions in the document" is a courtesy to the model, nothing more. Every mitigation below is
@@ -119,8 +119,17 @@ name matching.
 - Name matching with an instruction in the campaign name still produces only an issue (no alias row).
 - Evals: "malicious rejected X/Y" must be Y/Y, or the eval exits 1 (2.6, 2.10).
 
-**Owners:** 2.2 (malicious invoices), 2.5 (scan and guards), 2.8 (names) · **Status:** planned
-**Evidence:** (filled in by 2.10)
+**Owners:** 2.2 (malicious invoices), 2.5 (scan and guards), 2.8 (names) · **Status:** implemented
+**Evidence:** `test_extraction_generated.py::test_every_inbox_copy_is_rejected_before_the_model_is_called`,
+`test_extract.py::test_every_variant_in_a_pdf_is_rejected_without_a_model_call`,
+`test_extraction_pdf_text.py::test_hidden_variants_are_found_by_their_rule`,
+`test_extraction_guards.py::test_every_generator_payload_is_found_inside_an_invoice`,
+`test_extraction_confidence.py::test_a_changed_total_is_not_grounded`,
+`test_rename_judge.py::test_a_suspicious_name_never_reaches_the_model`,
+`test_match_names.py::test_no_alias_row_is_written_or_changed`. Eval gates: `make eval-extraction`
+and `make eval` fail unless every malicious copy is rejected with no model call, has an
+`extraction_rejected_suspicious` card and has no `core.invoices` row (decisions 043, 049).
+Residual risks: decision 042.
 
 ### T2 — Sensitive data sent to the provider or to traces
 
@@ -150,8 +159,15 @@ provider or stored in a Langfuse trace, where we no longer control retention.
   document, prompt or output text, masked or not (`test_llm_client.py`, `test_llm_tracing.py`).
 
 **Owners:** 2.3 (masking), 2.4 (masking on every call), 2.9 (traces); 2.2 adds the PII to test
-against · **Status:** planned
-**Evidence:** (filled in by 2.10)
+against · **Status:** implemented
+**Evidence:** `test_masking.py::test_masked_generated_documents_hold_no_pii`,
+`test_masking.py::test_generated_business_values_are_untouched`,
+`test_llm_client.py::test_provider_receives_masked_text_only`,
+`test_extract.py::test_the_provider_receives_masked_text_inside_document_tags`,
+`test_rename_judge.py::test_request_holds_only_the_minimal_masked_context`,
+`test_extraction_schema.py::test_schema_has_no_pii_field`,
+`test_llm_client.py::test_tracer_event_carries_no_text`,
+`test_llm_tracing.py::test_no_document_prompt_or_output_text_reaches_langfuse` (decisions 038, 048).
 
 ### T3 — Improper output handling (LLM values reaching `core`)
 
@@ -179,8 +195,15 @@ not on the invoice, a float that loses cents, an extra field, a very long string
 - A rejected document has no `core.invoices` row; a `needs_review` invoice gets an issue.
 
 **Owners:** 2.5 (schema, checks, confidence), 2.7 (what reaches `core`), 2.8 (LLM text in issues)
-· **Status:** planned
-**Evidence:** (filled in by 2.10)
+· **Status:** implemented
+**Evidence:** `test_extraction_schema.py::test_float_money_is_rejected`,
+`test_extraction_schema.py::test_extra_fields_are_rejected`,
+`test_extract.py::test_a_changed_total_goes_to_review`,
+`test_extraction_confidence.py::test_an_ungrounded_value_gets_zero`,
+`test_extraction_confidence.py::test_model_score_only_lowers`,
+`test_load_invoices_llm.py::test_only_extracted_documents_reach_core`,
+`test_renames.py::test_model_note_is_quoted_as_unverified_data`. Measured, not gated:
+"wrong but extracted" and "wrong at high confidence" in the extraction results (decision 043).
 
 ### T4 — Excessive agency
 
@@ -201,8 +224,13 @@ calls something because the input told it to, or because the code trusted its an
 - No extraction result has status `approved`.
 - Name matching writes no alias rows, whatever the fake model answers.
 
-**Owners:** 2.4 (no tools), 2.5 (statuses), 2.8 (no alias writes) · **Status:** planned
-**Evidence:** (filled in by 2.10)
+**Owners:** 2.4 (no tools), 2.5 (statuses), 2.8 (no alias writes) · **Status:** implemented
+**Evidence:** `test_llm_client.py::test_request_shape_has_no_tools`,
+`test_llm_gemini.py::test_request_body_is_strict_json_with_no_tools`,
+`test_extract.py::test_the_request_has_no_tools_and_uses_the_strict_schema`,
+`test_extraction_schema.py::test_no_status_means_approved`,
+`test_match_names.py::test_no_alias_row_is_written_or_changed`,
+`test_rename_judge.py::test_answer_schema_is_strict` (decisions 039, 042, 047).
 
 ### T5 — Unbounded consumption and cost
 
@@ -227,8 +255,16 @@ many expensive requests. The monthly bill grows without anyone noticing.
 - Reaching the cap mid-run leaves the run `partial`.
 
 **Owners:** 2.4 (caps, timeouts), 2.7 (sha256 skip, partial runs), 2.6 (cost reporting, `--limit`),
-2.5 (input size limits) · **Status:** planned
-**Evidence:** (filled in by 2.10)
+2.5 (input size limits) · **Status:** implemented
+**Evidence:** `test_llm_client.py::test_run_cap_refuses_before_the_call`,
+`test_llm_client.py::test_monthly_cap_refuses_before_the_call`,
+`test_llm_client.py::test_cap_is_checked_before_every_retry`,
+`test_llm_client.py::test_input_over_the_limit_is_never_sent`,
+`test_extraction_pdf_text.py::test_oversize_bytes_are_refused_before_parsing`,
+`test_load_invoices_llm.py::test_second_run_makes_no_model_call_and_keeps_rows`,
+`test_load_invoices_llm.py::test_cost_cap_skips_the_remaining_documents`,
+`test_match_names.py::test_cost_cap_still_writes_every_rename_and_makes_the_run_partial`.
+`make eval` makes no model call (`test_eval_stage2.py::test_stage_2_eval_never_builds_a_model_client`).
 
 ### T6 — Secret leakage
 
@@ -253,8 +289,16 @@ a Docker image or the public demo server.
 - The full test suite passes with no key set.
 - `test_demo_deploy.py` (exists) pins what the demo API container and image receive.
 
-**Owners:** 2.4 (config, gitleaks), 2.9 (Langfuse keys) · **Status:** planned
-**Evidence:** (filled in by 2.10)
+**Owners:** 2.4 (config, gitleaks), 2.9 (Langfuse keys) · **Status:** implemented
+**Evidence:** `test_llm_config.py::test_key_is_hidden_and_used_only_by_the_provider`,
+`test_llm_config.py::test_missing_key_is_a_clear_error`,
+`test_llm_gemini.py::test_key_is_sent_in_a_header_never_in_the_url`,
+`test_llm_gemini.py::test_client_error_fails_without_echoing_key_or_body`,
+`test_llm_tracing.py::test_secret_key_is_hidden_in_settings`,
+`test_llm_tracing.py::test_keys_travel_only_as_basic_auth`,
+`test_demo_deploy.py::test_secrets_and_eval_data_never_enter_the_build_context`,
+`test_demo_deploy.py::test_demo_api_gets_only_the_demo_ro_password`. The `no_real_llm` fixture in
+`conftest.py` removes the keys for every test; gitleaks v8.30.1 runs in pre-commit.
 
 ### T7 — Eval leakage (the answer key)
 
@@ -281,8 +325,15 @@ the answers, or rules are tuned to the answer key. The answer key could also lea
 - The loader in LLM mode fails a test if it opens a `.json` file.
 - Eval tests (2.6, 2.10) run on hand-built keys; no test reads the real answer key.
 
-**Owners:** 2.2 (#10 rows in the key), 2.6, 2.7 (no-JSON guard), 2.10 · **Status:** planned
-**Evidence:** (filled in by 2.10)
+**Owners:** 2.2 (#10 rows in the key), 2.6, 2.7 (no-JSON guard), 2.10 · **Status:** implemented
+**Evidence:** `test_eval_isolation.py::test_source_never_mentions_the_answer_key_or_eval`,
+`test_eval_isolation.py::test_demo_reads_only_the_committed_results_file`,
+`test_load_invoices_llm.py::test_llm_mode_never_opens_a_json`,
+`test_extract.py::test_no_path_parameter_anywhere`,
+`test_demo_deploy.py::test_dockerfile_never_copies_the_whole_context_or_eval_data`. Eval tests
+(`test_eval_stage1.py`, `test_eval_extraction.py`, `test_eval_stage2.py`) use hand-built keys only;
+`test_eval_stage2.py::test_results_file_holds_no_entities_numbers_paths_or_hashes` keeps
+`docs/eval-results.md` counts-only (decisions 033, 043, 049).
 
 ### T8 — Supply chain (new dependencies)
 
@@ -307,8 +358,12 @@ A PDF parser bug is triggered by a crafted invoice.
 **Known gap:** automated scanning (pip-audit, Dependabot, Trivy) arrives in stage 5. Until then this
 relies on a small dependency list and review.
 
-**Owners:** 2.4, 2.5, 2.9 · **Status:** planned
-**Evidence:** (filled in by 2.10)
+**Owners:** 2.4, 2.5, 2.9 · **Status:** implemented, with the known gap above
+**Evidence:** `test_llm_isolation.py::test_no_provider_access_outside_the_llm_layer`,
+`test_llm_isolation.py::test_sdk_pattern_catches_imports`,
+`test_extraction_pdf_text.py::test_oversize_bytes_are_refused_before_parsing`. Stage 2 added one
+runtime package, `pypdf` 6.21.4 (moved from dev, decision 042). Gemini (039) and Langfuse (048)
+use plain `httpx`, and 2.10 adds none.
 
 ## 7. Task → threat coverage
 

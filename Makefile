@@ -1,5 +1,6 @@
 .DEFAULT_GOAL := help
-.PHONY: help up down roles migrate test lint format generate mock-apis pipeline eval eval-load-key eval-stage1 eval-extraction \
+.PHONY: help up down roles migrate test lint format generate mock-apis pipeline eval eval-stage2 eval-load-key \
+	eval-stage1 eval-extraction \
 	llm-smoke airflow-up airflow-down airflow-password airflow-check demo-api \
 	demo-check-env demo-init demo-up demo-down demo-logs
 
@@ -41,14 +42,16 @@ pipeline: ## Run the nightly pipeline once (needs `make mock-apis` running)
 eval-load-key: ## Owner: load data/generated/answer_key.json into eval.answer_key
 	PYTHONPATH=backend uv run python -m evals.load_answer_key
 
-eval-stage1: ## Compare app.issues with eval.answer_key; fails on a missed error
-	PYTHONPATH=backend uv run python -m evals.stage1
+eval-stage1: ## Stage-1 view of app.issues vs eval.answer_key; prints only (ARGS="--results PATH" to write)
+	PYTHONPATH=backend uv run python -m evals.stage1 $(ARGS)
 
 eval-extraction: ## Owner: extraction eval with the live model (costs money; ARGS="--limit 5" for a sample)
 	PYTHONPATH=backend uv run python -m evals.extraction $(ARGS)
 
-eval: ## Run evals (stage 2)
-	@echo "not yet implemented (stage 2)"
+eval: ## Stage-2 eval, writes docs/eval-results.md (free: reads the DB and saved extraction state, no model calls)
+	PYTHONPATH=backend uv run python -m evals.stage2 $(ARGS)
+
+eval-stage2: eval ## Alias for `make eval`
 
 llm-smoke: ## Owner: one live LLM call with invented text (needs GEMINI_API_KEY; never in tests/CI)
 	PYTHONPATH=backend uv run python -m app.llm.smoke
